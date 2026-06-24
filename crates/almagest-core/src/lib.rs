@@ -26,8 +26,8 @@ pub use assets::Asset;
 pub use dashboard::{
     Action, ChartConfig, ChartSort, ChartType, ColumnConfig, Comparison, DASHBOARD_DSL_VERSION,
     Dashboard, DeltaFormat, DividerConfig, ImageConfig, Layout, MetricConfig, Orientation, Panel,
-    PanelKind, ParamKind, Parameter, Query, Row, SortDirection, SortSpec, TableConfig, TextConfig,
-    Theme, TrendDirection, Visibility, VisibilityEquals,
+    PanelKind, ParamKind, Parameter, Persist, Query, Row, SortDirection, SortSpec, TableConfig,
+    TextConfig, Theme, TrendDirection, Visibility, VisibilityEquals,
 };
 pub use dashboards::DashboardRecord;
 pub use data::{Compression, DatasetMeta};

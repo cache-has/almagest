@@ -58,6 +58,9 @@ pub struct Parameter {
     /// Human label for the input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Optional help text shown beneath the input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Default value (kind-specific shape; validated at resolution time, doc 07).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
@@ -73,9 +76,33 @@ pub struct Parameter {
     /// Inclusive upper bound for `number`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
+    /// Minimum chosen items for `multiselect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<usize>,
+    /// Maximum chosen items for `multiselect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<usize>,
     /// Whether `select` offers an "All" choice.
     #[serde(default)]
     pub allow_all: bool,
+    /// Where this parameter's value persists across loads (doc 07).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist: Option<Persist>,
+}
+
+/// Where a parameter value is preserved across loads. Drives the resolution
+/// priority (URL > file > declared default); see `planning/07`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Persist {
+    /// In memory for the current tab/session; reset on reload (default).
+    Session,
+    /// Encoded in the URL query string; shareable via link.
+    Url,
+    /// Saved into the file as the new default; persists across sessions/users.
+    File,
+    /// Always reset to the declared default on each load.
+    None,
 }
 
 /// The kinds of parameter input.
@@ -86,7 +113,9 @@ pub enum ParamKind {
     Text,
     /// Numeric input.
     Number,
-    /// Checkbox / toggle.
+    /// Checkbox / toggle. The `toggle` alias deserializes to this kind (the doc
+    /// lists "toggle" as an on/off rendering of a boolean).
+    #[serde(alias = "toggle")]
     Boolean,
     /// A single date.
     Date,
@@ -706,6 +735,67 @@ impl Dashboard {
             }
         }
         Ok(())
+    }
+
+    /// Map each parameter id to the ids of panels whose **inline query**
+    /// references it (`{{id}}` or, for a daterange, `{{id.start}}` /
+    /// `{{id.end}}`). This is the dependency graph the runtime uses to re-query
+    /// only the panels affected by a parameter change (doc 07). Saved-query
+    /// (`query_id`) references are opaque here and are not analyzed; a parameter
+    /// declared but referenced by no panel maps to an empty list.
+    pub fn parameter_dependents(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut map: std::collections::BTreeMap<String, Vec<String>> = self
+            .parameters
+            .iter()
+            .map(|p| (p.id.clone(), Vec::new()))
+            .collect();
+
+        for row in &self.layout.rows {
+            for panel in &row.panels {
+                if let Some(Query::Inline { sql }) = &panel.query {
+                    let mut bases: Vec<String> = referenced_params(sql)
+                        .iter()
+                        .map(|t| base_token(t).to_string())
+                        .collect();
+                    bases.sort_unstable();
+                    bases.dedup();
+                    for base in bases {
+                        if let Some(panels) = map.get_mut(&base)
+                            && !panels.contains(&panel.id)
+                        {
+                            panels.push(panel.id.clone());
+                        }
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    /// The ids of panels that must re-query when `param_id` changes, in
+    /// document order.
+    pub fn panels_using_parameter(&self, param_id: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        for row in &self.layout.rows {
+            for panel in &row.panels {
+                if let Some(Query::Inline { sql }) = &panel.query
+                    && referenced_params(sql)
+                        .iter()
+                        .any(|t| base_token(t) == param_id)
+                {
+                    out.push(panel.id.as_str());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The base parameter id of a `{{...}}` token: `date_range.start` → `date_range`.
+fn base_token(token: &str) -> &str {
+    match token.split_once('.') {
+        Some((base, _)) => base,
+        None => token,
     }
 }
 

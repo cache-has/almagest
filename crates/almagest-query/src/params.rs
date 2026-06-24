@@ -53,10 +53,17 @@ pub enum ParamValue {
     Boolean(bool),
     /// Date value as `YYYY-MM-DD` (validated on construction paths).
     Date(String),
+    /// A list of scalar values, rendered as a comma-separated literal list for
+    /// `IN (...)` clauses (the multiselect expansion). Produced by the
+    /// dashboard parameter resolver (doc 07), not by [`ParamSchema`] — the
+    /// declared scalar schema never carries one.
+    List(Vec<ParamValue>),
 }
 
 impl ParamValue {
-    /// The type this value carries.
+    /// The type this value carries. A [`ParamValue::List`] reports the type of
+    /// its first element (or [`ParamType::String`] when empty); lists are a
+    /// substitution-expansion shape, not a declarable scalar type.
     pub fn param_type(&self) -> ParamType {
         match self {
             ParamValue::String(_) => ParamType::String,
@@ -64,6 +71,10 @@ impl ParamValue {
             ParamValue::Float(_) => ParamType::Float,
             ParamValue::Boolean(_) => ParamType::Boolean,
             ParamValue::Date(_) => ParamType::Date,
+            ParamValue::List(items) => items
+                .first()
+                .map(ParamValue::param_type)
+                .unwrap_or(ParamType::String),
         }
     }
 
@@ -110,6 +121,21 @@ impl ParamValue {
             ParamValue::Date(d) => {
                 validate_date(d)?;
                 format!("DATE '{d}'")
+            }
+            // A value list for `IN (...)`. Each element is rendered through the
+            // same safe path, so per-value quoting/escaping still holds. An
+            // empty list renders as `NULL` so `col IN (NULL)` is valid SQL that
+            // matches no rows — never an empty `IN ()`, which is a syntax error.
+            ParamValue::List(items) => {
+                if items.is_empty() {
+                    "NULL".to_string()
+                } else {
+                    let mut parts = Vec::with_capacity(items.len());
+                    for item in items {
+                        parts.push(item.to_sql_literal()?);
+                    }
+                    parts.join(", ")
+                }
             }
         })
     }
@@ -299,4 +325,39 @@ pub fn substitute(sql: &str, params: &QueryParams) -> Result<String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_renders_as_quoted_in_clause() {
+        let v = ParamValue::List(vec![
+            ParamValue::String("a".into()),
+            ParamValue::String("b'c".into()),
+        ]);
+        assert_eq!(v.to_sql_literal().unwrap(), "'a', 'b''c'");
+    }
+
+    #[test]
+    fn empty_list_renders_as_null() {
+        let v = ParamValue::List(vec![]);
+        assert_eq!(v.to_sql_literal().unwrap(), "NULL");
+    }
+
+    #[test]
+    fn multiselect_substitutes_inside_in_clause() {
+        let mut values = HashMap::new();
+        values.insert(
+            "statuses".to_string(),
+            ParamValue::List(vec![
+                ParamValue::String("paid".into()),
+                ParamValue::String("pending".into()),
+            ]),
+        );
+        let params = QueryParams::from_values(values);
+        let sql = substitute("SELECT * FROM o WHERE status IN ({{statuses}})", &params).unwrap();
+        assert_eq!(sql, "SELECT * FROM o WHERE status IN ('paid', 'pending')");
+    }
 }

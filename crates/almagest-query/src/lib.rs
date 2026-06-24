@@ -14,10 +14,16 @@ mod cache;
 mod context;
 mod error;
 mod params;
+mod resolve;
 mod result;
+mod urlstate;
 
 pub use cache::{AlmagestCache, DEFAULT_MAX_BYTES, DEFAULT_TTL_SECONDS};
 pub use context::{AlmagestQueryContext, ContextOptions};
 pub use error::{QueryError, Result};
 pub use params::{ParamDecl, ParamSchema, ParamType, ParamValue, QueryParams, substitute};
+pub use resolve::{
+    ALL_SENTINEL, interpolate_action_value, resolve_daterange_preset, resolve_parameters,
+};
 pub use result::{ColumnSchema, DatabaseSchema, QueryResult, TableSchema};
+pub use urlstate::{decode_url_state, encode_url_state, layered_state};

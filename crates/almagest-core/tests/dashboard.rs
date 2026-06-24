@@ -379,3 +379,47 @@ fn typed_panels_round_trip_through_a_file() {
     assert_eq!(loaded, dash, "typed panels must survive a file round-trip");
     file.close().unwrap();
 }
+
+// --- Phase 07: parameter dependency analysis ----------------------------
+
+#[test]
+fn parameter_dependents_map_panels_by_referenced_param() {
+    // `region` is used by two panels; `dr` (a daterange) by one via {{dr.start}};
+    // `unused` by none.
+    let json = r#"{
+      "version": 1, "name": "D",
+      "parameters": [
+        { "id": "region", "kind": "select", "options": ["US", "EU"] },
+        { "id": "dr", "kind": "daterange" },
+        { "id": "unused", "kind": "text" }
+      ],
+      "layout": { "rows": [ { "panels": [
+        { "id": "a", "kind": "metric", "span": 4,
+          "query": { "sql": "SELECT SUM(x) AS value FROM t WHERE region = {{region}}" } },
+        { "id": "b", "kind": "metric", "span": 4,
+          "query": { "sql": "SELECT COUNT(*) AS value FROM t WHERE region = {{region}} AND d >= {{dr.start}}" } },
+        { "id": "c", "kind": "text", "span": 4, "content": "static" }
+      ] } ] }
+    }"#;
+    let dash = Dashboard::from_json(json).unwrap();
+
+    let deps = dash.parameter_dependents();
+    assert_eq!(deps["region"], vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(deps["dr"], vec!["b".to_string()]);
+    assert!(deps["unused"].is_empty());
+
+    assert_eq!(dash.panels_using_parameter("region"), vec!["a", "b"]);
+    assert_eq!(dash.panels_using_parameter("dr"), vec!["b"]);
+    assert!(dash.panels_using_parameter("unused").is_empty());
+}
+
+#[test]
+fn toggle_alias_parses_as_boolean() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "parameters": [ { "id": "flag", "kind": "toggle", "default": true } ],
+      "layout": { "rows": [] }
+    }"#;
+    let dash = Dashboard::from_json(json).unwrap();
+    assert_eq!(dash.parameters[0].kind, almagest_core::ParamKind::Boolean);
+}

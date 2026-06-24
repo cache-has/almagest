@@ -145,6 +145,41 @@ impl AlmagestQueryContext {
         })
     }
 
+    /// Resolve a parameter `options_query` (doc 07): run it and return the
+    /// distinct values of its **first column** as display strings, in
+    /// first-seen order with nulls skipped. This populates `select` /
+    /// `multiselect` choices at dashboard load. The first column is cast to
+    /// UTF-8 so numeric/date option columns work without the author having to
+    /// `CAST` in SQL.
+    pub async fn resolve_options(&self, sql: &str) -> Result<Vec<String>> {
+        use arrow::array::{Array, StringArray};
+        use arrow::datatypes::DataType;
+
+        let res = self.execute(sql, &QueryParams::empty()).await?;
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for batch in &res.batches {
+            if batch.num_columns() == 0 {
+                continue;
+            }
+            let utf8 = arrow::compute::cast(batch.column(0), &DataType::Utf8)?;
+            let arr = utf8
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("cast to Utf8 yields a StringArray");
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    continue;
+                }
+                let v = arr.value(i).to_string();
+                if seen.insert(v.clone()) {
+                    out.push(v);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Introspect the schema of every registered table (for the editor /
     /// autocompletion).
     pub fn schema(&self) -> DatabaseSchema {
