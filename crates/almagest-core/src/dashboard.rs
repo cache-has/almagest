@@ -16,6 +16,7 @@
 //! connection. (This corrects the pre-embedded-only example in `planning/05`.)
 
 use crate::error::{AlmagestError, Result};
+use almagest_format::Format;
 use serde::{Deserialize, Serialize};
 
 /// The DSL version this build authors and validates. Bumped on breaking DSL
@@ -132,44 +133,330 @@ pub struct Row {
     pub panels: Vec<Panel>,
 }
 
-/// A single panel. Common fields are typed here; kind-specific configuration
-/// (chart type, axes, formatting, sortability, …) is captured in `config` and
-/// formalized by the component library (doc 06).
+/// A single panel. Common fields are typed here; the `kind` tag and its
+/// kind-specific configuration are flattened in via [`PanelKind`] (formalized
+/// in doc 06 — these were previously an opaque `config` map).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
     /// Unique within the dashboard.
     pub id: String,
-    /// Panel kind.
-    pub kind: PanelKind,
     /// Header title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Optional subtitle / tooltip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Grid columns occupied.
     pub span: u32,
-    /// Data source (omitted for text panels).
+    /// Data source (omitted for text / image / divider panels).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<Query>,
     /// Optional parameter-driven visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<Visibility>,
-    /// Kind-specific configuration, formalized in doc 06. Preserved verbatim so
-    /// the definition round-trips losslessly even before doc 06 types exist.
+    /// Declarative interactions fired on user action (row/point click).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_click: Vec<Action>,
+    /// The panel kind and its typed configuration. The `kind` discriminator and
+    /// the kind-specific fields are flattened to the panel's top level, matching
+    /// the DSL JSON (`{ "kind": "chart", "chart_type": "bar", "x": … }`).
     #[serde(flatten)]
-    pub config: serde_json::Map<String, serde_json::Value>,
+    pub kind: PanelKind,
 }
 
-/// The kinds of panel.
+/// The kinds of panel and their typed configuration. Internally tagged on
+/// `kind`; the variant's config fields sit alongside the tag.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PanelKind {
+    /// A single big-number KPI.
+    Metric(MetricConfig),
+    /// A chart (line / bar / area / donut / pie / scatter).
+    Chart(ChartConfig),
+    /// A tabular result.
+    Table(TableConfig),
+    /// A static markdown/text block (no query).
+    Text(TextConfig),
+    /// A static image drawn from `almagest_assets` (no query).
+    Image(ImageConfig),
+    /// A visual separator (no query).
+    Divider(DividerConfig),
+}
+
+impl PanelKind {
+    /// The kind's snake_case name, for messages.
+    pub fn name(&self) -> &'static str {
+        match self {
+            PanelKind::Metric(_) => "metric",
+            PanelKind::Chart(_) => "chart",
+            PanelKind::Table(_) => "table",
+            PanelKind::Text(_) => "text",
+            PanelKind::Image(_) => "image",
+            PanelKind::Divider(_) => "divider",
+        }
+    }
+
+    /// Whether this kind draws its content from a query. Text, image, and
+    /// divider panels are static; the rest require a query.
+    pub fn needs_query(&self) -> bool {
+        matches!(
+            self,
+            PanelKind::Metric(_) | PanelKind::Chart(_) | PanelKind::Table(_)
+        )
+    }
+}
+
+/// KPI configuration: how to format the single value and, optionally, compare
+/// it to a previous-period value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MetricConfig {
+    /// Display format for the `value` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<Format>,
+    /// Optional comparison to a previous value for a trend indicator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<Comparison>,
+}
+
+/// A metric's comparison to a previous-period value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Comparison {
+    /// The result column holding the previous value.
+    pub previous_field: String,
+    /// How to render the delta.
+    #[serde(default)]
+    pub delta_format: DeltaFormat,
+    /// Which direction counts as "good" (drives coloring).
+    #[serde(default)]
+    pub direction: TrendDirection,
+}
+
+/// How a metric delta is rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeltaFormat {
+    /// Percentage change (default).
+    #[default]
+    Percent,
+    /// Absolute difference.
+    Absolute,
+}
+
+/// Which direction of change is "good", for direction-aware coloring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrendDirection {
+    /// Up is good (default).
+    #[default]
+    HigherBetter,
+    /// Down is good.
+    LowerBetter,
+    /// Neither — show change without good/bad coloring.
+    Neutral,
+}
+
+/// Chart configuration. Cartesian charts (line/bar/area/scatter) use `x`/`y`
+/// (plus optional `series`); proportional charts (donut/pie) use
+/// `category`/`value`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChartConfig {
+    /// The chart type.
+    pub chart_type: ChartType,
+    /// X-axis column (cartesian charts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<String>,
+    /// Y-axis column (cartesian charts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<String>,
+    /// Grouping column for multi-series (cartesian charts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    /// Category column (donut/pie).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Value column (donut/pie).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Bar orientation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<Orientation>,
+    /// Category ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<ChartSort>,
+    /// Stack series (area / bar).
+    #[serde(default)]
+    pub stacked: bool,
+    /// Show percentage labels (donut/pie).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_percent: Option<bool>,
+    /// Show the legend (renderer default when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_legend: Option<bool>,
+    /// Show the background grid (renderer default when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_grid: Option<bool>,
+    /// Format for X-axis / category values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x_format: Option<Format>,
+    /// Format for Y-axis / value numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y_format: Option<Format>,
+}
+
+/// The chart types Almagest renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PanelKind {
-    /// A single big-number metric.
-    Metric,
-    /// A chart (type in `config.chart_type`).
-    Chart,
-    /// A tabular result.
-    Table,
-    /// A static markdown/text block (no query).
-    Text,
+pub enum ChartType {
+    /// Time series / continuous line.
+    Line,
+    /// Categorical bars.
+    Bar,
+    /// Filled line.
+    Area,
+    /// Donut (ring) proportion.
+    Donut,
+    /// Pie proportion.
+    Pie,
+    /// Two-dimensional scatter.
+    Scatter,
+}
+
+impl ChartType {
+    /// Cartesian charts plot `x`/`y`; proportional charts plot
+    /// `category`/`value`.
+    fn is_cartesian(self) -> bool {
+        matches!(
+            self,
+            ChartType::Line | ChartType::Bar | ChartType::Area | ChartType::Scatter
+        )
+    }
+}
+
+/// Bar orientation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Orientation {
+    /// Bars rise along the Y-axis.
+    Vertical,
+    /// Bars extend along the X-axis.
+    Horizontal,
+}
+
+/// Category ordering for bar/line charts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChartSort {
+    /// Ascending by the X value.
+    AscByX,
+    /// Descending by the X value.
+    DescByX,
+    /// Ascending by the Y value.
+    AscByY,
+    /// Descending by the Y value.
+    DescByY,
+}
+
+/// Table configuration: per-column formatting, sorting, and pagination.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TableConfig {
+    /// Per-column overrides, keyed by result column name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub columns: std::collections::BTreeMap<String, ColumnConfig>,
+    /// Allow the viewer to sort by clicking column headers.
+    #[serde(default)]
+    pub sortable: bool,
+    /// Initial sort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_default: Option<SortSpec>,
+    /// Rows per page (no pagination when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+}
+
+/// Per-column display configuration for a table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ColumnConfig {
+    /// Header label (defaults to the column name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Fixed column width (CSS length, e.g. `120px`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<String>,
+    /// Cell value format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<Format>,
+}
+
+/// A column + direction sort specification.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SortSpec {
+    /// Result column to sort on.
+    pub column: String,
+    /// Sort direction.
+    #[serde(default)]
+    pub direction: SortDirection,
+}
+
+/// Sort direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDirection {
+    /// Ascending (default).
+    #[default]
+    Asc,
+    /// Descending.
+    Desc,
+}
+
+/// Markdown text-block configuration. Accepts `content` (canonical) or the
+/// `markdown` alias.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TextConfig {
+    /// The markdown body.
+    #[serde(default, alias = "markdown")]
+    pub content: String,
+}
+
+/// Static-image configuration; `asset_path` names an entry in `almagest_assets`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageConfig {
+    /// The asset name/path inside the file.
+    pub asset_path: String,
+    /// Alt text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
+}
+
+/// Divider configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DividerConfig {
+    /// Optional section label drawn on the rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// A declarative interaction fired on user action. Tagged on `kind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Action {
+    /// Update a parameter on the current dashboard, triggering dependent
+    /// re-queries. `value` may be a literal or a `$row.<col>` template.
+    SetParameter {
+        /// The parameter id to update.
+        parameter: String,
+        /// The value to set (literal or `$row.<column>` token).
+        value: serde_json::Value,
+    },
+    /// Navigate to another dashboard in the same file.
+    NavigateTo {
+        /// The target dashboard id.
+        dashboard: String,
+    },
+    /// Open an external URL (http/https/mailto only).
+    OpenUrl {
+        /// The URL to open.
+        url: String,
+    },
 }
 
 /// A panel's data source: inline SQL or a reference to a saved query.
@@ -310,14 +597,14 @@ impl Dashboard {
                         ),
                     ));
                 }
-                // Data panels need a query; text panels don't.
-                if panel.kind != PanelKind::Text && panel.query.is_none() {
+                // Data panels need a query; text / image / divider don't.
+                if panel.kind.needs_query() && panel.query.is_none() {
                     return Err(err(
                         &loc,
                         format!(
                             "panel '{}' of kind {} requires a query",
                             panel.id,
-                            kind_label_panel(panel.kind)
+                            panel.kind.name()
                         ),
                     ));
                 }
@@ -372,9 +659,163 @@ impl Dashboard {
                         }
                     }
                 }
+
+                // Kind-specific configuration rules.
+                validate_panel_kind(panel, &loc)?;
+
+                // Interactions: set_parameter must target a declared parameter;
+                // open_url must use a safe scheme.
+                for (ai, action) in panel.on_click.iter().enumerate() {
+                    let aloc = format!("{loc}.on_click[{ai}]");
+                    match action {
+                        Action::SetParameter { parameter, .. } => {
+                            if !param_ids.contains(parameter.as_str()) {
+                                return Err(err(
+                                    &aloc,
+                                    format!(
+                                        "panel '{}' set_parameter targets unknown parameter '{}'",
+                                        panel.id, parameter
+                                    ),
+                                ));
+                            }
+                        }
+                        Action::NavigateTo { dashboard } => {
+                            if dashboard.trim().is_empty() {
+                                return Err(err(
+                                    &aloc,
+                                    format!(
+                                        "panel '{}' navigate_to needs a dashboard id",
+                                        panel.id
+                                    ),
+                                ));
+                            }
+                        }
+                        Action::OpenUrl { url } => {
+                            if !is_safe_external_url(url) {
+                                return Err(err(
+                                    &aloc,
+                                    format!(
+                                        "panel '{}' open_url '{}' must be an http(s) or mailto URL",
+                                        panel.id, url
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
         Ok(())
+    }
+}
+
+/// Validate the typed configuration that is specific to a panel's kind.
+fn validate_panel_kind(panel: &Panel, loc: &str) -> Result<()> {
+    match &panel.kind {
+        PanelKind::Metric(cfg) => {
+            if let Some(c) = &cfg.comparison
+                && c.previous_field.trim().is_empty()
+            {
+                return Err(err(
+                    loc,
+                    format!(
+                        "metric panel '{}' comparison.previous_field must not be empty",
+                        panel.id
+                    ),
+                ));
+            }
+        }
+        PanelKind::Chart(cfg) => {
+            if cfg.chart_type.is_cartesian() {
+                if cfg.x.is_none() || cfg.y.is_none() {
+                    return Err(err(
+                        loc,
+                        format!(
+                            "{} chart '{}' requires both 'x' and 'y'",
+                            chart_type_name(cfg.chart_type),
+                            panel.id
+                        ),
+                    ));
+                }
+            } else if cfg.category.is_none() || cfg.value.is_none() {
+                return Err(err(
+                    loc,
+                    format!(
+                        "{} chart '{}' requires both 'category' and 'value'",
+                        chart_type_name(cfg.chart_type),
+                        panel.id
+                    ),
+                ));
+            }
+        }
+        PanelKind::Image(cfg) => {
+            if cfg.asset_path.trim().is_empty() {
+                return Err(err(
+                    loc,
+                    format!("image panel '{}' requires an asset_path", panel.id),
+                ));
+            }
+        }
+        PanelKind::Table(_) | PanelKind::Text(_) | PanelKind::Divider(_) => {}
+    }
+    Ok(())
+}
+
+/// A URL is safe to open from a dashboard interaction only if it uses an
+/// `http`, `https`, or `mailto` scheme. This blocks `javascript:`, `data:`,
+/// `file:`, and other schemes that are injection or exfiltration vectors when an
+/// authored dashboard is opened in a viewer.
+fn is_safe_external_url(url: &str) -> bool {
+    let lowered = url.trim().to_ascii_lowercase();
+    lowered.starts_with("http://")
+        || lowered.starts_with("https://")
+        || lowered.starts_with("mailto:")
+}
+
+fn chart_type_name(t: ChartType) -> &'static str {
+    match t {
+        ChartType::Line => "line",
+        ChartType::Bar => "bar",
+        ChartType::Area => "area",
+        ChartType::Donut => "donut",
+        ChartType::Pie => "pie",
+        ChartType::Scatter => "scatter",
+    }
+}
+
+impl Panel {
+    /// The result columns this panel needs from its query. Empty for static
+    /// panels (text / image / divider) and for tables (which display whatever
+    /// columns the query returns). The renderer uses this to detect a query
+    /// whose shape doesn't match the panel before drawing — a friendlier error
+    /// than a blank chart. The `"value"` literal mirrors the metric contract
+    /// (one row, a `value` column) from `planning/06`.
+    pub fn required_columns(&self) -> Vec<&str> {
+        match &self.kind {
+            PanelKind::Metric(cfg) => {
+                let mut cols = vec!["value"];
+                if let Some(c) = &cfg.comparison {
+                    cols.push(c.previous_field.as_str());
+                }
+                cols
+            }
+            PanelKind::Chart(cfg) => {
+                let mut cols = Vec::new();
+                if cfg.chart_type.is_cartesian() {
+                    cols.extend(cfg.x.as_deref());
+                    cols.extend(cfg.y.as_deref());
+                    cols.extend(cfg.series.as_deref());
+                } else {
+                    cols.extend(cfg.category.as_deref());
+                    cols.extend(cfg.value.as_deref());
+                }
+                cols
+            }
+            PanelKind::Table(_)
+            | PanelKind::Text(_)
+            | PanelKind::Image(_)
+            | PanelKind::Divider(_) => Vec::new(),
+        }
     }
 }
 
@@ -391,15 +832,6 @@ fn kind_label(k: ParamKind) -> &'static str {
         ParamKind::Select => "select",
         ParamKind::MultiSelect => "multiselect",
         _ => "parameter",
-    }
-}
-
-fn kind_label_panel(k: PanelKind) -> &'static str {
-    match k {
-        PanelKind::Metric => "metric",
-        PanelKind::Chart => "chart",
-        PanelKind::Table => "table",
-        PanelKind::Text => "text",
     }
 }
 

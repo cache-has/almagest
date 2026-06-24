@@ -90,6 +90,7 @@ dependencies = [
 name = "almagest-core"
 version = "0.1.0"
 dependencies = [
+ "almagest-format",
  "arrow",
  "bytes",
  "chrono",
@@ -109,6 +110,15 @@ version = "0.1.0"
 dependencies = [
  "almagest-core",
  "almagest-server",
+]
+
+[[package]]
+name = "almagest-format"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

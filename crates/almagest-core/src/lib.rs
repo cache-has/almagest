@@ -21,10 +21,13 @@ mod metadata;
 mod migrations;
 mod schema;
 
+pub use almagest_format::{DurationUnit, Format, FormatValue};
 pub use assets::Asset;
 pub use dashboard::{
-    DASHBOARD_DSL_VERSION, Dashboard, Layout, Panel, PanelKind, ParamKind, Parameter, Query, Row,
-    Theme, Visibility, VisibilityEquals,
+    Action, ChartConfig, ChartSort, ChartType, ColumnConfig, Comparison, DASHBOARD_DSL_VERSION,
+    Dashboard, DeltaFormat, DividerConfig, ImageConfig, Layout, MetricConfig, Orientation, Panel,
+    PanelKind, ParamKind, Parameter, Query, Row, SortDirection, SortSpec, TableConfig, TextConfig,
+    Theme, TrendDirection, Visibility, VisibilityEquals,
 };
 pub use dashboards::DashboardRecord;
 pub use data::{Compression, DatasetMeta};

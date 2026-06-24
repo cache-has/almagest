@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/almagest-format",
     "crates/almagest-core",
     "crates/almagest-query",
     "crates/almagest-connectors",
@@ -19,6 +20,7 @@ rust-version = "1.96"
 
 [workspace.dependencies]
 # Internal crates
+almagest-format = { path = "crates/almagest-format" }
 almagest-core = { path = "crates/almagest-core" }
 almagest-query = { path = "crates/almagest-query" }
 almagest-connectors = { path = "crates/almagest-connectors" }

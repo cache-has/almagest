@@ -3,7 +3,7 @@
 //! Tests for the dashboard DSL (Phase 05): parsing, validation, round-trip, and
 //! typed persistence / export-import through a `.alm`.
 
-use almagest_core::{AlmagestError, AlmagestFile, Dashboard};
+use almagest_core::{AlmagestError, AlmagestFile, ChartType, Dashboard, PanelKind};
 use tempfile::TempDir;
 
 const MINIMAL: &str = r#"{
@@ -28,7 +28,7 @@ fn invalid_location(json: &str) -> String {
 }
 
 #[test]
-fn example_file_parses_validates_and_keeps_panel_config() {
+fn example_file_parses_validates_and_has_typed_config() {
     let json = std::fs::read_to_string(example_path()).unwrap();
     let dash = Dashboard::from_json(&json).unwrap();
     assert_eq!(dash.name, "Sales Overview");
@@ -36,13 +36,23 @@ fn example_file_parses_validates_and_keeps_panel_config() {
     assert_eq!(dash.layout.grid, 12);
     assert_eq!(dash.layout.rows.len(), 3);
 
-    // Kind-specific config survives via the flattened `config` map.
+    // Kind-specific config is now typed, not an opaque map.
     let chart = &dash.layout.rows[1].panels[0];
     assert_eq!(chart.id, "revenue_by_month");
-    assert_eq!(
-        chart.config.get("chart_type").and_then(|v| v.as_str()),
-        Some("bar")
-    );
+    match &chart.kind {
+        PanelKind::Chart(c) => {
+            assert_eq!(c.chart_type, ChartType::Bar);
+            assert_eq!(c.x.as_deref(), Some("month"));
+            assert_eq!(c.y.as_deref(), Some("revenue"));
+            assert!(c.y_format.is_some(), "y_format should parse into a Format");
+        }
+        other => panic!("expected a chart panel, got {other:?}"),
+    }
+
+    // The metric panels expose `value` (and no comparison) as required columns.
+    let metric = &dash.layout.rows[0].panels[0];
+    assert!(matches!(metric.kind, PanelKind::Metric(_)));
+    assert_eq!(metric.required_columns(), vec!["value"]);
 }
 
 #[test]
@@ -223,4 +233,149 @@ fn import_with_dangling_query_reference_fails() {
         matches!(err, AlmagestError::InvalidDashboard { .. }),
         "got {err:?}"
     );
+}
+
+// --- Phase 06: typed component config -----------------------------------
+
+#[test]
+fn cartesian_chart_requires_x_and_y() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "layout": { "rows": [ { "panels": [
+        { "id": "c", "kind": "chart", "chart_type": "line", "span": 6,
+          "query": { "sql": "SELECT a, b FROM t" }, "x": "a" }
+      ] } ] }
+    }"#;
+    assert_eq!(invalid_location(json), "layout.rows[0].panels[0]");
+}
+
+#[test]
+fn donut_chart_requires_category_and_value() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "layout": { "rows": [ { "panels": [
+        { "id": "c", "kind": "chart", "chart_type": "donut", "span": 6,
+          "query": { "sql": "SELECT src, n FROM t" }, "category": "src" }
+      ] } ] }
+    }"#;
+    assert_eq!(invalid_location(json), "layout.rows[0].panels[0]");
+}
+
+#[test]
+fn image_requires_asset_path() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "layout": { "rows": [ { "panels": [
+        { "id": "img", "kind": "image", "span": 2, "asset_path": "" }
+      ] } ] }
+    }"#;
+    assert_eq!(invalid_location(json), "layout.rows[0].panels[0]");
+}
+
+#[test]
+fn static_panels_parse_without_a_query() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "layout": { "rows": [ { "panels": [
+        { "id": "img", "kind": "image", "span": 2, "asset_path": "logo.png", "alt": "Logo" },
+        { "id": "div", "kind": "divider", "span": 12, "label": "Section" },
+        { "id": "txt", "kind": "text", "span": 12, "content": "Hello" }
+      ] } ] }
+    }"#;
+    let dash = Dashboard::from_json(json).unwrap();
+    let panels = &dash.layout.rows[0].panels;
+    assert!(matches!(panels[0].kind, PanelKind::Image(_)));
+    assert!(matches!(panels[1].kind, PanelKind::Divider(_)));
+    assert!(matches!(panels[2].kind, PanelKind::Text(_)));
+}
+
+#[test]
+fn text_panel_accepts_markdown_alias() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "layout": { "rows": [ { "panels": [
+        { "id": "t", "kind": "text", "span": 12, "markdown": "**bold**" }
+      ] } ] }
+    }"#;
+    let dash = Dashboard::from_json(json).unwrap();
+    match &dash.layout.rows[0].panels[0].kind {
+        PanelKind::Text(c) => assert_eq!(c.content, "**bold**"),
+        other => panic!("expected text, got {other:?}"),
+    }
+}
+
+#[test]
+fn on_click_set_parameter_must_target_a_declared_param() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "layout": { "rows": [ { "panels": [
+        { "id": "t", "kind": "table", "span": 6, "query": { "sql": "SELECT 1 AS value" },
+          "on_click": [ { "kind": "set_parameter", "parameter": "ghost", "value": "$row.id" } ] }
+      ] } ] }
+    }"#;
+    assert_eq!(
+        invalid_location(json),
+        "layout.rows[0].panels[0].on_click[0]"
+    );
+}
+
+#[test]
+fn on_click_open_url_rejects_unsafe_scheme() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "layout": { "rows": [ { "panels": [
+        { "id": "t", "kind": "text", "span": 6, "content": "x",
+          "on_click": [ { "kind": "open_url", "url": "javascript:alert(1)" } ] }
+      ] } ] }
+    }"#;
+    assert_eq!(
+        invalid_location(json),
+        "layout.rows[0].panels[0].on_click[0]"
+    );
+}
+
+#[test]
+fn metric_comparison_widens_required_columns() {
+    let json = r#"{
+      "version": 1, "name": "D",
+      "layout": { "rows": [ { "panels": [
+        { "id": "m", "kind": "metric", "span": 4,
+          "query": { "sql": "SELECT a AS value, b AS prev FROM t" },
+          "format": { "kind": "currency", "prefix": "$" },
+          "comparison": { "previous_field": "prev", "direction": "higher_better" } }
+      ] } ] }
+    }"#;
+    let dash = Dashboard::from_json(json).unwrap();
+    assert_eq!(
+        dash.layout.rows[0].panels[0].required_columns(),
+        vec!["value", "prev"]
+    );
+}
+
+#[test]
+fn typed_panels_round_trip_through_a_file() {
+    let json = r#"{
+      "version": 1, "name": "Mixed",
+      "parameters": [ { "id": "region", "kind": "select", "options": ["US", "EU"] } ],
+      "layout": { "rows": [
+        { "panels": [
+          { "id": "c", "kind": "chart", "chart_type": "bar", "span": 8,
+            "query": { "sql": "SELECT region, n FROM t" }, "x": "region", "y": "n",
+            "orientation": "horizontal", "sort": "desc_by_y",
+            "y_format": { "kind": "compact" },
+            "on_click": [ { "kind": "set_parameter", "parameter": "region", "value": "$row.region" } ] },
+          { "id": "logo", "kind": "image", "span": 4, "asset_path": "logo.png" }
+        ] },
+        { "panels": [ { "id": "rule", "kind": "divider", "span": 12, "label": "Notes" } ] }
+      ] }
+    }"#;
+    let dash = Dashboard::from_json(json).unwrap();
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("mixed.alm");
+    let mut file = AlmagestFile::create(&path).unwrap();
+    let id = file.save_dashboard(&dash, None).unwrap();
+    let loaded = file.load_dashboard(&id).unwrap();
+    assert_eq!(loaded, dash, "typed panels must survive a file round-trip");
+    file.close().unwrap();
 }
