@@ -1,0 +1,19 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Almagest working files
+*.alm-wal
+*.alm-shm
+/scratch
+/tmp
+
+# Editor / OS
+.DS_Store
+*.swp

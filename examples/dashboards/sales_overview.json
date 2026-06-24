@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "name": "Sales Overview",
+  "description": "Revenue and order metrics over the embedded orders data.",
+  "parameters": [
+    {
+      "id": "date_range",
+      "kind": "daterange",
+      "label": "Date range",
+      "default": { "preset": "last_30_days" }
+    },
+    {
+      "id": "region",
+      "kind": "select",
+      "label": "Region",
+      "options": ["All", "US", "EU"],
+      "default": "All",
+      "allow_all": true
+    }
+  ],
+  "theme": {
+    "palette": ["#2563eb", "#16a34a", "#d97706", "#dc2626"],
+    "background": "#ffffff"
+  },
+  "layout": {
+    "grid": 12,
+    "rows": [
+      {
+        "panels": [
+          {
+            "id": "total_revenue",
+            "kind": "metric",
+            "title": "Total Revenue",
+            "span": 4,
+            "query": {
+              "sql": "SELECT SUM(amount) AS value FROM orders WHERE created_at BETWEEN {{date_range.start}} AND {{date_range.end}} AND ({{region}} = 'All' OR region = {{region}})"
+            },
+            "format": { "kind": "currency", "prefix": "$" }
+          },
+          {
+            "id": "order_count",
+            "kind": "metric",
+            "title": "Total Orders",
+            "span": 4,
+            "query": { "sql": "SELECT COUNT(*) AS value FROM orders" },
+            "format": { "kind": "number" }
+          },
+          {
+            "id": "aov",
+            "kind": "metric",
+            "title": "Avg Order Value",
+            "span": 4,
+            "query": { "sql": "SELECT AVG(amount) AS value FROM orders" },
+            "format": { "kind": "currency", "prefix": "$" }
+          }
+        ]
+      },
+      {
+        "panels": [
+          {
+            "id": "revenue_by_month",
+            "kind": "chart",
+            "chart_type": "bar",
+            "title": "Revenue by Month",
+            "span": 8,
+            "query": { "sql": "SELECT month, SUM(amount) AS revenue FROM orders GROUP BY month ORDER BY month" },
+            "x": "month",
+            "y": "revenue",
+            "y_format": { "kind": "currency", "prefix": "$" }
+          },
+          {
+            "id": "top_products",
+            "kind": "table",
+            "title": "Top 10 Products",
+            "span": 4,
+            "query": { "sql": "SELECT product, SUM(quantity) AS qty FROM order_items GROUP BY product ORDER BY qty DESC LIMIT 10" },
+            "sortable": true
+          }
+        ]
+      },
+      {
+        "panels": [
+          {
+            "id": "notes",
+            "kind": "text",
+            "title": "About",
+            "span": 12,
+            "markdown": "All figures are computed from data embedded in this `.alm` file."
+          }
+        ]
+      }
+    ]
+  }
+}

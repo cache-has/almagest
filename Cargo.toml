@@ -1,0 +1,86 @@
+[workspace]
+members = [
+    "crates/almagest-core",
+    "crates/almagest-query",
+    "crates/almagest-connectors",
+    "crates/almagest-server",
+    "crates/almagest-cli",
+    "crates/almagest-embed",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cache-has/almagest"
+authors = ["Cache McClure <cache@horizonanalytic.com>"]
+rust-version = "1.96"
+
+[workspace.dependencies]
+# Internal crates
+almagest-core = { path = "crates/almagest-core" }
+almagest-query = { path = "crates/almagest-query" }
+almagest-connectors = { path = "crates/almagest-connectors" }
+almagest-server = { path = "crates/almagest-server" }
+almagest-embed = { path = "crates/almagest-embed" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Web framework
+axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Storage — the .alm file is a SQLite database
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+# Columnar data — bulk data is stored as Parquet blobs, decoded to Arrow.
+# Pinned to match Armillary/DataFusion (datafusion 53 → arrow/parquet 58) so
+# almagest-core's blob layer stays compatible when almagest-query pulls in DataFusion.
+arrow = "58"
+parquet = { version = "58", features = ["arrow", "zstd", "snap"] }
+bytes = "1"
+
+# Query engine — pure-Rust columnar engine over the embedded Arrow data.
+datafusion = "53"
+
+# Stable hashing for cache keys (must be reproducible across machines so a
+# shared .alm shares its cache).
+sha2 = "0.10"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Static frontend embedding
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Testing
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

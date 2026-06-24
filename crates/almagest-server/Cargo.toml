@@ -1,0 +1,25 @@
+[package]
+name = "almagest-server"
+description = "Almagest HTTP server — Axum API and embedded frontend assets."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+almagest-core.workspace = true
+almagest-query.workspace = true
+almagest-connectors.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
