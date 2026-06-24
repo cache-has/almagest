@@ -4,10 +4,16 @@
   import { initialParamValues } from "../lib/params";
   import { encodeUrlState, decodeUrlState, layeredState } from "../lib/urlstate";
   import { exportSnapshot } from "../lib/snapshot";
+  import { getSnapshot } from "../lib/snapshotData";
   import ParameterBar from "../components/ParameterBar.svelte";
   import DashboardGrid from "../components/DashboardGrid.svelte";
 
   let { id, query = "" }: { id: string; query?: string } = $props();
+
+  // A baked snapshot renders read-only: results are frozen, parameters can't be
+  // changed (there's no engine to re-query), and the live-only toolbar is hidden.
+  const snap = getSnapshot();
+  const isSnapshot = !!snap;
 
   let dashboard = $state<Dashboard | null>(null);
   let paramValues = $state<Record<string, unknown>>({});
@@ -28,8 +34,10 @@
       .then((d) => {
         dashboard = d;
         const decls = d.parameters ?? [];
-        // URL state (shareable link) overrides declared defaults.
-        paramValues = layeredState(decodeUrlState(query, decls), initialParamValues(decls));
+        // Snapshot: the frozen param values. Live: URL state over declared defaults.
+        paramValues = isSnapshot
+          ? layeredState(snap!.params, initialParamValues(decls))
+          : layeredState(decodeUrlState(query, decls), initialParamValues(decls));
         seeded = true;
         loading = false;
       })
@@ -40,10 +48,14 @@
   });
 
   // Reflect parameter changes into the URL (silently — no history spam, no
-  // hashchange loop) so the address bar is always a shareable link.
+  // hashchange loop) so the address bar is always a shareable link. Read the
+  // reactive values *before* the guard: a short-circuiting `if` would skip the
+  // dependency reads and the effect would never re-run on param changes.
   $effect(() => {
-    if (!seeded || !dashboard) return;
-    const qs = encodeUrlState(paramValues, dashboard.parameters ?? []);
+    const dash = dashboard;
+    const values = paramValues;
+    if (!seeded || !dash || isSnapshot) return;
+    const qs = encodeUrlState(values, dash.parameters ?? []);
     const url = `#/view/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`;
     history.replaceState(history.state, "", url);
   });
@@ -82,21 +94,30 @@
 
 <div class="viewer">
   <header class="topbar">
-    <a class="back" href="#/">← All dashboards</a>
+    {#if !isSnapshot}<a class="back" href="#/">← All dashboards</a>{/if}
     {#if dashboard}
       <h1>{dashboard.name}</h1>
-      <div class="actions">
-        <button onclick={refresh} title="Re-run all panels">⟳ Refresh</button>
-        <button onclick={copyLink} title="Copy a shareable link to this view">
-          {copied ? "✓ Copied" : "Share"}
-        </button>
-        <button onclick={snapshot} disabled={exporting} title="Download a static HTML snapshot">
-          {exporting ? "Exporting…" : "Export"}
-        </button>
-        <a class="edit" href={`#/edit/${id}`}>Edit</a>
-      </div>
+      {#if !isSnapshot}
+        <div class="actions">
+          <button onclick={refresh} title="Re-run all panels">⟳ Refresh</button>
+          <button onclick={copyLink} title="Copy a shareable link to this view">
+            {copied ? "✓ Copied" : "Share"}
+          </button>
+          <button onclick={snapshot} disabled={exporting} title="Download a static HTML snapshot">
+            {exporting ? "Exporting…" : "Export"}
+          </button>
+          <a class="edit" href={`#/edit/${id}`}>Edit</a>
+        </div>
+      {/if}
     {/if}
   </header>
+
+  {#if isSnapshot && snap}
+    <div class="snapshot-banner">
+      Static snapshot — data frozen at {snap.generatedAt.replace("T", " ").slice(0, 19)} UTC.
+      Parameters are read-only.
+    </div>
+  {/if}
 
   {#if loading}
     <p class="muted">Loading…</p>
@@ -107,6 +128,7 @@
       parameters={dashboard.parameters ?? []}
       values={paramValues}
       dashboardId={id}
+      disabled={isSnapshot}
       onSetParam={setParam}
     />
     <DashboardGrid {dashboard} dashboardId={id} {paramValues} {refreshKey} onSetParam={setParam} />
@@ -165,6 +187,15 @@
   }
   .error {
     color: var(--bad, #e03131);
+  }
+  .snapshot-banner {
+    background: #fff9db;
+    border: 1px solid #ffe066;
+    color: #846a00;
+    border-radius: 8px;
+    padding: 0.5rem 0.85rem;
+    font-size: 0.82rem;
+    margin-bottom: 1rem;
   }
 
   /* Print: drop the chrome, keep the dashboard. */

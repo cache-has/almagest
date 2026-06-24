@@ -195,6 +195,8 @@ export interface AlmagestMeta {
   format_version: number;
   server_version: string;
   dashboard_count: number;
+  read_only: boolean;
+  heartbeat_enabled: boolean;
 }
 
 export interface DashboardSummary {

@@ -143,6 +143,7 @@ pub async fn ingest(
     Query(q): Query<IngestQuery>,
     body: Bytes,
 ) -> ApiResult<(StatusCode, Json<IngestResult>)> {
+    state.ensure_writable()?;
     if body.is_empty() {
         return Err(ApiError::bad_request("upload body is empty"));
     }
@@ -215,6 +216,7 @@ pub async fn delete_dataset(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<StatusCode> {
+    state.ensure_writable()?;
     let removed = {
         let mut file = state.file();
         file.remove_dataset(&name)?
@@ -240,6 +242,7 @@ pub async fn rename_dataset(
     Path(name): Path<String>,
     Json(req): Json<RenameRequest>,
 ) -> ApiResult<StatusCode> {
+    state.ensure_writable()?;
     {
         let mut file = state.file();
         file.rename_dataset(&name, &req.to)?;

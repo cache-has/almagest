@@ -6,11 +6,13 @@
     parameters,
     values,
     dashboardId,
+    disabled = false,
     onSetParam,
   }: {
     parameters: Parameter[];
     values: Record<string, unknown>;
     dashboardId: string;
+    disabled?: boolean;
     onSetParam: (name: string, value: unknown) => void;
   } = $props();
 </script>
@@ -21,6 +23,7 @@
       <ParamInput
         {param}
         {dashboardId}
+        {disabled}
         value={values[param.id]}
         onChange={(v) => onSetParam(param.id, v)}
       />

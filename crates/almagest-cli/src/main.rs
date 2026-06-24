@@ -3,15 +3,18 @@
 //! The `almagest` command-line interface.
 //!
 //! `new` creates an empty `.alm`; `open` and `serve` start the HTTP server
-//! (Phase 08) in desktop (ephemeral port, auto-open browser) and headless
-//! (fixed port, long-lived) modes respectively. `export` is fleshed out in
-//! Phase 11.
+//! (Phase 08) in desktop (ephemeral port, auto-open browser, heartbeat-managed
+//! lifecycle) and headless (fixed port, long-lived) modes respectively. `export`
+//! (Phase 11) bakes a self-contained static HTML snapshot.
 
 use almagest_core::AlmagestFile;
 use almagest_server::{ServerOptions, start_server};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::net::SocketAddr;
 use std::path::PathBuf;
+
+mod export;
 
 /// Almagest — dashboards as files, not services.
 #[derive(Debug, Parser)]
@@ -36,6 +39,15 @@ enum Command {
     Open {
         /// Path to the `.alm` file to open.
         path: PathBuf,
+        /// Fix the port (default: an ephemeral one).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Start the server without opening a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// Serve the file read-only (no edits, ingest, or uploads).
+        #[arg(long)]
+        read_only: bool,
     },
     /// Serve a `.alm` file over HTTP (headless mode).
     Serve {
@@ -44,14 +56,29 @@ enum Command {
         /// Port to listen on.
         #[arg(long, default_value_t = 8080)]
         port: u16,
+        /// Host/interface to bind (default loopback; `0.0.0.0` to expose).
+        #[arg(long, default_value = "127.0.0.1")]
+        host: std::net::IpAddr,
+        /// Serve the file read-only (no edits, ingest, or uploads).
+        #[arg(long)]
+        read_only: bool,
     },
-    /// Export a `.alm` dashboard as a static HTML snapshot.
+    /// Export a `.alm` dashboard as a self-contained static HTML snapshot.
     Export {
         /// Path to the `.alm` file to export.
         path: PathBuf,
-        /// Output directory for the static bundle.
-        #[arg(long, default_value = "./static")]
-        output: PathBuf,
+        /// Output `.html` path (default: `<dashboard>-snapshot.html`).
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+        /// Which dashboard to export (default: the only/first one).
+        #[arg(long)]
+        dashboard: Option<String>,
+        /// Output format. Only `html` is supported today (`pdf` is planned).
+        #[arg(long, default_value = "html")]
+        format: String,
+        /// Parameter values as a JSON object, e.g. `{"region":"EU"}`.
+        #[arg(long)]
+        parameters: Option<String>,
     },
 }
 
@@ -82,13 +109,46 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::New { path }) => cmd_new(&path),
-        Some(Command::Open { path }) => cmd_serve(&path, ServerOptions::desktop()).await,
-        Some(Command::Serve { path, port }) => {
-            cmd_serve(&path, ServerOptions::headless(port)).await
+        Some(Command::Open {
+            path,
+            port,
+            no_open,
+            read_only,
+        }) => {
+            let mut opts = ServerOptions::desktop()
+                .with_open_browser(!no_open)
+                .with_read_only(read_only);
+            if let Some(port) = port {
+                opts = opts.with_bind(SocketAddr::from(([127, 0, 0, 1], port)));
+            }
+            cmd_serve(&path, opts).await
         }
-        Some(Command::Export { path, output }) => {
-            tracing::info!(?path, ?output, "export is not yet implemented");
-            anyhow::bail!("`almagest export` is not yet implemented (Phase 11)")
+        Some(Command::Serve {
+            path,
+            port,
+            host,
+            read_only,
+        }) => {
+            let opts = ServerOptions::headless(port)
+                .with_bind(SocketAddr::new(host, port))
+                .with_read_only(read_only);
+            cmd_serve(&path, opts).await
+        }
+        Some(Command::Export {
+            path,
+            output,
+            dashboard,
+            format,
+            parameters,
+        }) => {
+            export::run(
+                &path,
+                output.as_deref(),
+                dashboard.as_deref(),
+                &format,
+                parameters.as_deref(),
+            )
+            .await
         }
     }
 }

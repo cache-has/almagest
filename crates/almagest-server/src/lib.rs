@@ -27,6 +27,7 @@ mod api;
 mod datasets;
 mod error;
 mod events;
+mod export;
 mod state;
 mod static_assets;
 
@@ -34,6 +35,7 @@ mod static_assets;
 mod tests;
 
 pub use error::{ApiError, ApiResult};
+pub use export::export_snapshot_html;
 pub use state::{AppState, ServerEvent};
 
 use almagest_core::AlmagestFile;
@@ -61,19 +63,33 @@ pub enum ServerError {
     /// Binding the listener or an I/O fault during serve.
     #[error("server io error: {0}")]
     Io(#[from] std::io::Error),
+    /// Arrow IPC encoding failed while baking a snapshot.
+    #[error("arrow encode error: {0}")]
+    Arrow(#[from] arrow::error::ArrowError),
+    /// Serializing the snapshot payload failed.
+    #[error("serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
+    /// An export precondition failed (e.g. the file has no dashboards).
+    #[error("{0}")]
+    Export(String),
 }
 
 /// How to bind and run the server.
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     /// Address to bind. Desktop mode uses an ephemeral port (`127.0.0.1:0`);
-    /// headless mode pins a chosen port.
+    /// headless mode pins a chosen port (loopback unless `--host` widens it).
     pub bind_addr: SocketAddr,
     /// Open the system browser at the bound URL once listening (desktop mode).
     pub open_browser: bool,
     /// Apply a permissive CORS policy — for embedded mode where the host page is
     /// on a different origin. Off by default (localhost desktop needs none).
     pub enable_cors: bool,
+    /// Serve the file read-only: every mutating endpoint returns 403.
+    pub read_only: bool,
+    /// Run the heartbeat watchdog: once the frontend's pings stop (the last tab
+    /// closed), shut down. Desktop lifecycle; off for long-lived headless serve.
+    pub heartbeat_shutdown: bool,
 }
 
 impl Default for ServerOptions {
@@ -82,26 +98,48 @@ impl Default for ServerOptions {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             open_browser: false,
             enable_cors: false,
+            read_only: false,
+            heartbeat_shutdown: false,
         }
     }
 }
 
 impl ServerOptions {
-    /// Desktop mode: ephemeral localhost port, auto-open the browser.
+    /// Desktop mode: ephemeral localhost port, auto-open the browser, and a
+    /// heartbeat watchdog so closing the last tab exits the process.
     pub fn desktop() -> Self {
         Self {
             open_browser: true,
+            heartbeat_shutdown: true,
             ..Self::default()
         }
     }
 
-    /// Headless mode: bind a fixed port on all interfaces, no browser.
+    /// Headless mode: bind a fixed port on loopback, no browser, long-lived.
+    /// Widen the host with [`ServerOptions::with_bind`] (`--host 0.0.0.0`).
     pub fn headless(port: u16) -> Self {
         Self {
-            bind_addr: SocketAddr::from(([0, 0, 0, 0], port)),
-            open_browser: false,
-            enable_cors: false,
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            ..Self::default()
         }
+    }
+
+    /// Override the bind address (host + port).
+    pub fn with_bind(mut self, addr: SocketAddr) -> Self {
+        self.bind_addr = addr;
+        self
+    }
+
+    /// Serve the file read-only.
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Override whether the browser auto-opens.
+    pub fn with_open_browser(mut self, open: bool) -> Self {
+        self.open_browser = open;
+        self
     }
 }
 
@@ -181,6 +219,7 @@ pub(crate) fn build_router(state: AppState, enable_cors: bool) -> Router {
         .route("/import/dashboard", post(api::import_dashboard))
         .route("/events", get(events::ws_events))
         .route("/shutdown", post(api::shutdown))
+        .route("/heartbeat", post(api::heartbeat))
         // Author-time uploads (ingest, assets) can be large — lift the 2 MB default.
         .layer(DefaultBodyLimit::max(1024 * 1024 * 1024));
 
@@ -208,8 +247,17 @@ pub async fn start_server(
 ) -> Result<ServerHandle, ServerError> {
     let file = AlmagestFile::open(path)?;
     let query = AlmagestQueryContext::open(&file)?;
-    let state = AppState::new(file, query);
+    let state =
+        AppState::new(file, query).with_flags(options.read_only, options.heartbeat_shutdown);
     let shutdown = state.shutdown.clone();
+
+    // Desktop lifecycle: once the frontend's heartbeats stop (the last tab
+    // closed), shut the process down. A generous startup grace covers the time
+    // before the browser connects; after that, a stretch with no heartbeat means
+    // nobody is watching.
+    if options.heartbeat_shutdown {
+        spawn_heartbeat_watchdog(state.clone());
+    }
 
     let app = build_router(state, options.enable_cors);
 
@@ -241,6 +289,35 @@ pub async fn start_server(
         task,
         shutdown,
     })
+}
+
+/// Startup grace before the heartbeat watchdog starts enforcing — long enough
+/// for the OS to launch the browser and the SPA to load and send its first ping.
+const HEARTBEAT_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+/// How stale the last heartbeat may get before we conclude the last tab closed.
+const HEARTBEAT_IDLE: std::time::Duration = std::time::Duration::from_secs(12);
+/// How often the watchdog checks heartbeat staleness.
+const HEARTBEAT_POLL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Spawn the desktop heartbeat watchdog: after a startup grace, trigger shutdown
+/// once the last heartbeat is older than [`HEARTBEAT_IDLE`] (every connected tab
+/// pings on an interval, so a quiet stretch means none are left).
+fn spawn_heartbeat_watchdog(state: AppState) {
+    tokio::spawn(async move {
+        tokio::time::sleep(HEARTBEAT_GRACE).await;
+        let mut ticker = tokio::time::interval(HEARTBEAT_POLL);
+        loop {
+            ticker.tick().await;
+            if state.heartbeat_age() > HEARTBEAT_IDLE {
+                tracing::info!(
+                    "no heartbeat in {:?}; last tab closed — shutting down",
+                    HEARTBEAT_IDLE
+                );
+                state.shutdown.notify_one();
+                break;
+            }
+        }
+    });
 }
 
 /// Resolve when either the in-process shutdown is triggered or an OS signal

@@ -22,6 +22,28 @@ pub async fn serve_index() -> Response {
     serve_path("index.html")
 }
 
+/// The built bundle's JS and CSS, concatenated, for inlining into a static
+/// export (the snapshot HTML carries the renderer with it). The Vite build emits
+/// a single JS and single CSS chunk; if that ever changes, all chunks are
+/// concatenated in iteration order.
+pub(crate) fn inline_bundle() -> (String, String) {
+    let mut js = String::new();
+    let mut css = String::new();
+    for path in FrontendAssets::iter() {
+        let Some(f) = FrontendAssets::get(&path) else {
+            continue;
+        };
+        if path.ends_with(".js") {
+            js.push_str(&String::from_utf8_lossy(&f.data));
+            js.push('\n');
+        } else if path.ends_with(".css") {
+            css.push_str(&String::from_utf8_lossy(&f.data));
+            css.push('\n');
+        }
+    }
+    (js, css)
+}
+
 /// Catch-all for any route the API router didn't claim: serve the requested
 /// embedded asset, falling back to `index.html` for client-side routes.
 pub async fn serve_asset(uri: Uri) -> Response {

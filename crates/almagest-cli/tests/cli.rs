@@ -46,13 +46,47 @@ fn serve_missing_file_fails_cleanly() {
 }
 
 #[test]
-fn export_is_not_yet_implemented() {
+fn export_missing_file_fails_cleanly() {
     Command::cargo_bin("almagest")
         .unwrap()
         .args(["export", "missing.alm"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not yet implemented"));
+        .stderr(predicate::str::contains("does not exist"));
+}
+
+#[test]
+fn export_rejects_unsupported_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.alm");
+    Command::cargo_bin("almagest")
+        .unwrap()
+        .args(["new", path.to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("almagest")
+        .unwrap()
+        .args(["export", path.to_str().unwrap(), "--format", "pdf"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported --format"));
+}
+
+#[test]
+fn export_with_no_dashboards_reports_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("empty.alm");
+    Command::cargo_bin("almagest")
+        .unwrap()
+        .args(["new", path.to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("almagest")
+        .unwrap()
+        .args(["export", path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no dashboards"));
 }
 
 #[test]

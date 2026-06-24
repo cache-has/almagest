@@ -6,6 +6,7 @@
 // nothing else.
 
 import { decodeArrow, type ArrowResult } from "./arrow";
+import { getSnapshot, base64ToBytes } from "./snapshotData";
 import type {
   AlmagestMeta,
   AssetEntry,
@@ -18,6 +19,9 @@ import type {
 } from "./types";
 
 const BASE = "/api/almagest";
+
+/** An empty Arrow result for panels with no baked snapshot data. */
+const EMPTY_RESULT: ArrowResult = { fields: [], rows: [], rowCount: 0 };
 
 /** An error carrying the server's structured `{ error: { code, message } }`. */
 export class ApiError extends Error {
@@ -65,11 +69,45 @@ async function sendJson<T>(method: string, path: string, body?: unknown): Promis
 }
 
 export const api = {
-  meta: () => getJson<AlmagestMeta>(""),
+  meta: (): Promise<AlmagestMeta> => {
+    const snap = getSnapshot();
+    if (snap) {
+      return Promise.resolve({
+        id: snap.dashboardId,
+        title: snap.dashboard.name,
+        description: snap.dashboard.description ?? "",
+        format_version: 0,
+        server_version: "snapshot",
+        dashboard_count: 1,
+        read_only: true,
+        heartbeat_enabled: false,
+      });
+    }
+    return getJson<AlmagestMeta>("");
+  },
 
-  listDashboards: () => getJson<DashboardSummary[]>("/dashboards"),
+  listDashboards: (): Promise<DashboardSummary[]> => {
+    const snap = getSnapshot();
+    if (snap) {
+      return Promise.resolve([
+        {
+          id: snap.dashboardId,
+          name: snap.dashboard.name,
+          description: snap.dashboard.description ?? null,
+          folder: null,
+          created_at: snap.generatedAt,
+          updated_at: snap.generatedAt,
+        },
+      ]);
+    }
+    return getJson<DashboardSummary[]>("/dashboards");
+  },
 
-  getDashboard: (id: string) => getJson<Dashboard>(`/dashboards/${encodeURIComponent(id)}`),
+  getDashboard: (id: string): Promise<Dashboard> => {
+    const snap = getSnapshot();
+    if (snap) return Promise.resolve(snap.dashboard);
+    return getJson<Dashboard>(`/dashboards/${encodeURIComponent(id)}`);
+  },
 
   createDashboard: (dashboard: Dashboard, folder?: string) =>
     sendJson<{ id: string }>("POST", "/dashboards", { ...dashboard, folder }),
@@ -82,11 +120,18 @@ export const api = {
 
   schema: () => getJson<DatabaseSchema>("/schema"),
 
-  resolveOptions: (dashboardId: string, parameter: string) =>
-    sendJson<{ options: string[] }>("POST", "/options", {
+  resolveOptions: (dashboardId: string, parameter: string): Promise<string[]> => {
+    // In a snapshot, parameters are frozen — declared static options only.
+    const snap = getSnapshot();
+    if (snap) {
+      const decl = snap.dashboard.parameters?.find((p) => p.id === parameter);
+      return Promise.resolve(decl?.options ?? []);
+    }
+    return sendJson<{ options: string[] }>("POST", "/options", {
       dashboard_id: dashboardId,
       parameter,
-    }).then((r) => r.options),
+    }).then((r) => r.options);
+  },
 
   exportDashboard: async (id: string): Promise<string> => {
     const res = await fetch(`${BASE}/export/dashboard/${encodeURIComponent(id)}`, {
@@ -154,6 +199,15 @@ export const api = {
     panelId: string,
     parameters: Record<string, unknown>,
   ): Promise<ArrowResult> => {
+    // Snapshot mode: results are frozen and inlined; return the baked Arrow.
+    const snap = getSnapshot();
+    if (snap) {
+      const b64 = snap.panels[panelId];
+      if (!b64) return EMPTY_RESULT;
+      // base64ToBytes returns a fresh, exact-size Uint8Array — its buffer is the
+      // whole stream.
+      return decodeArrow(base64ToBytes(b64).buffer as ArrayBuffer);
+    }
     const res = await fetch(`${BASE}/panels/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -168,7 +222,10 @@ export const api = {
   },
 };
 
-/** Absolute URL for an embedded asset (used by image panels). */
+/** Absolute URL for an embedded asset (used by image panels). In snapshot mode
+ *  this resolves to the inlined data URL so images render with no server. */
 export function assetUrl(path: string): string {
+  const snap = getSnapshot();
+  if (snap) return snap.assets[path] ?? "";
   return `${BASE}/assets/${path.split("/").map(encodeURIComponent).join("/")}`;
 }

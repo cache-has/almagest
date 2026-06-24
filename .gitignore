@@ -8,6 +8,11 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 
+# Playwright
+frontend/e2e/.artifacts/
+frontend/test-results/
+frontend/playwright-report/
+
 # Almagest working files
 *.alm-wal
 *.alm-shm

@@ -82,6 +82,41 @@ fn fixture() -> Fixture {
     }
 }
 
+/// Like [`fixture`] but served read-only (every mutation should be rejected).
+fn read_only_fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ro.alm");
+    let mut file = AlmagestFile::create(&path).unwrap();
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "region",
+        DataType::Utf8,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(StringArray::from(vec!["EU"]))],
+    )
+    .unwrap();
+    file.put_dataset("sales", schema, &[batch], Compression::Zstd)
+        .unwrap();
+    let dashboard_id = file
+        .create_dashboard(
+            "RO",
+            None,
+            None,
+            r#"{"version":1,"name":"RO","layout":{"rows":[{"panels":[
+                {"id":"t","span":12,"kind":"text","content":"hi"}]}]}}"#,
+        )
+        .unwrap();
+    let query = AlmagestQueryContext::open(&file).unwrap();
+    let state = AppState::new(file, query).with_flags(true, false);
+    Fixture {
+        _dir: dir,
+        router: build_router(state, false),
+        dashboard_id,
+    }
+}
+
 /// Send a request and return (status, headers, body bytes).
 async fn send(
     router: &Router,
@@ -560,4 +595,74 @@ async fn asset_upload_get_delete_roundtrip() {
 
     let (status, _h, _b) = send(&fx.router, get("/api/almagest/assets/logo.png")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// --- read-only mode + heartbeat lifecycle ------------------------------------
+
+#[tokio::test]
+async fn read_only_meta_advertises_the_flag() {
+    let fx = read_only_fixture();
+    let (status, _h, body) = send(&fx.router, get("/api/almagest")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["read_only"], true);
+}
+
+#[tokio::test]
+async fn read_only_rejects_writes_but_allows_reads() {
+    let fx = read_only_fixture();
+
+    // Reads still work.
+    let (status, _h, _b) = send(&fx.router, get("/api/almagest/dashboards")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Every mutation is 403 Forbidden.
+    let create = post_json(
+        "/api/almagest/dashboards",
+        serde_json::json!({"version":1,"name":"X","layout":{"rows":[]}}),
+    );
+    let (status, _h, body) = send(&fx.router, create).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"]["code"], "forbidden");
+
+    let del = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/almagest/dashboards/{}", fx.dashboard_id))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _h, _b) = send(&fx.router, del).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let ingest = post_bytes(
+        "/api/almagest/datasets?format=csv&name=x",
+        "text/csv",
+        "a,b\n1,2\n",
+    );
+    let (status, _h, _b) = send(&fx.router, ingest).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let put = Request::builder()
+        .method("PUT")
+        .uri("/api/almagest/assets/x.png")
+        .header(header::CONTENT_TYPE, "image/png")
+        .body(Body::from(vec![1u8, 2, 3]))
+        .unwrap();
+    let (status, _h, _b) = send(&fx.router, put).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn heartbeat_endpoint_accepts_pings() {
+    let fx = fixture();
+    let (status, _h, _b) = send(
+        &fx.router,
+        Request::builder()
+            .method("POST")
+            .uri("/api/almagest/heartbeat")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
 }

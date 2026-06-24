@@ -17,6 +17,11 @@ frontend:
 frontend-check:
     cd frontend && npm run check
 
+# Build the bundle + binary, then run the Playwright end-to-end smoke suite
+e2e: frontend
+    cargo build -p almagest-cli
+    cd frontend && npm run e2e
+
 # Build backend and frontend
 build: frontend
     cargo build --workspace

@@ -40,6 +40,10 @@ pub struct AlmagestMeta {
     pub server_version: &'static str,
     /// Number of dashboards in the file.
     pub dashboard_count: usize,
+    /// Whether the file is served read-only (the editor should hide write UI).
+    pub read_only: bool,
+    /// Whether the client should send heartbeats (desktop lifecycle).
+    pub heartbeat_enabled: bool,
 }
 
 /// `GET /api/almagest` — file identity, title, version, dashboard count.
@@ -52,6 +56,8 @@ pub async fn get_meta(State(state): State<AppState>) -> ApiResult<Json<AlmagestM
         format_version: file.format_version()?,
         server_version: almagest_core::ALMAGEST_VERSION,
         dashboard_count: file.list_dashboards()?.len(),
+        read_only: state.read_only(),
+        heartbeat_enabled: state.heartbeat_enabled(),
     }))
 }
 
@@ -126,6 +132,7 @@ pub async fn create_dashboard(
     State(state): State<AppState>,
     Json(body): Json<DashboardWrite>,
 ) -> ApiResult<(StatusCode, Json<CreatedId>)> {
+    state.ensure_writable()?;
     let id = {
         let mut file = state.file();
         file.save_dashboard(&body.dashboard, body.folder.as_deref())?
@@ -142,6 +149,7 @@ pub async fn update_dashboard(
     Path(id): Path<String>,
     Json(body): Json<DashboardWrite>,
 ) -> ApiResult<StatusCode> {
+    state.ensure_writable()?;
     {
         let mut file = state.file();
         file.update_dashboard_typed(&id, &body.dashboard, body.folder.as_deref())?;
@@ -155,6 +163,7 @@ pub async fn delete_dashboard(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    state.ensure_writable()?;
     let removed = {
         let mut file = state.file();
         file.remove_dashboard(&id)?
@@ -191,6 +200,7 @@ pub async fn import_dashboard(
     State(state): State<AppState>,
     Json(dashboard): Json<Dashboard>,
 ) -> ApiResult<(StatusCode, Json<CreatedId>)> {
+    state.ensure_writable()?;
     // Re-serialize to reuse the core import path (parse + query-ref check + save).
     let json = serde_json::to_string(&dashboard)
         .map_err(|e| ApiError::bad_request(format!("invalid dashboard: {e}")))?;
@@ -397,6 +407,7 @@ pub async fn upload_asset(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
+    state.ensure_writable()?;
     if body.is_empty() {
         return Err(ApiError::bad_request("asset body is empty"));
     }
@@ -417,6 +428,7 @@ pub async fn delete_asset(
     State(state): State<AppState>,
     Path(path): Path<String>,
 ) -> ApiResult<StatusCode> {
+    state.ensure_writable()?;
     let removed = {
         let mut file = state.file();
         file.remove_asset(&path)?
@@ -436,6 +448,14 @@ pub async fn shutdown(State(state): State<AppState>) -> StatusCode {
     tracing::info!("shutdown requested via API");
     state.shutdown.notify_one();
     StatusCode::ACCEPTED
+}
+
+/// `POST /api/almagest/heartbeat` — a connected client is still alive. In
+/// desktop mode a watchdog shuts the server down once these stop arriving (the
+/// last tab closed); in other modes it's recorded and otherwise ignored.
+pub async fn heartbeat(State(state): State<AppState>) -> StatusCode {
+    state.touch_heartbeat();
+    StatusCode::NO_CONTENT
 }
 
 // --- helpers -----------------------------------------------------------------

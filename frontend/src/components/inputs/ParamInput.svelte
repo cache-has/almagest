@@ -6,11 +6,13 @@
     param,
     value,
     dashboardId,
+    disabled = false,
     onChange,
   }: {
     param: Parameter;
     value: unknown;
     dashboardId: string;
+    disabled?: boolean;
     onChange: (value: unknown) => void;
   } = $props();
 
@@ -69,6 +71,7 @@
     <input
       type="text"
       value={value as string}
+      {disabled}
       oninput={(e) => debouncedChange(e.currentTarget.value)}
       onchange={flush}
     />
@@ -78,21 +81,22 @@
       value={value as number}
       min={param.min}
       max={param.max}
+      {disabled}
       oninput={(e) => debouncedChange(e.currentTarget.valueAsNumber)}
       onchange={flush}
     />
   {:else if param.kind === "boolean"}
-    <input type="checkbox" checked={!!value} onchange={(e) => onChange(e.currentTarget.checked)} />
+    <input type="checkbox" checked={!!value} {disabled} onchange={(e) => onChange(e.currentTarget.checked)} />
   {:else if param.kind === "date"}
-    <input type="date" value={value as string} oninput={(e) => onChange(e.currentTarget.value)} />
+    <input type="date" value={value as string} {disabled} oninput={(e) => onChange(e.currentTarget.value)} />
   {:else if param.kind === "daterange"}
     <span class="range">
-      <input type="date" value={range.start} oninput={(e) => onChange({ ...range, start: e.currentTarget.value })} />
+      <input type="date" value={range.start} {disabled} oninput={(e) => onChange({ ...range, start: e.currentTarget.value })} />
       <span class="dash">–</span>
-      <input type="date" value={range.end} oninput={(e) => onChange({ ...range, end: e.currentTarget.value })} />
+      <input type="date" value={range.end} {disabled} oninput={(e) => onChange({ ...range, end: e.currentTarget.value })} />
     </span>
   {:else if param.kind === "select"}
-    <select value={value as string} onchange={(e) => onChange(e.currentTarget.value)}>
+    <select value={value as string} {disabled} onchange={(e) => onChange(e.currentTarget.value)}>
       {#if param.allow_all}<option value="All">All</option>{/if}
       {#each options as opt (opt)}<option value={opt}>{opt}</option>{/each}
     </select>
@@ -103,6 +107,7 @@
           <input
             type="checkbox"
             checked={Array.isArray(value) && (value as string[]).includes(opt)}
+            {disabled}
             onchange={(e) => multiToggle(opt, e.currentTarget.checked)}
           />
           {opt}
