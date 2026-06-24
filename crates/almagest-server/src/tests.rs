@@ -110,6 +110,15 @@ fn post_json(uri: &str, json: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
+fn post_bytes(uri: &str, content_type: &str, bytes: impl Into<Body>) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(bytes.into())
+        .unwrap()
+}
+
 #[tokio::test]
 async fn meta_reports_title_and_dashboard_count() {
     let fx = fixture();
@@ -346,4 +355,209 @@ async fn spa_fallback_serves_index_for_unknown_route() {
     let (status, _h, body) = send(&fx.router, get("/dashboard/some-name")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(String::from_utf8_lossy(&body).contains("<!DOCTYPE html>"));
+}
+
+// --- ingest / dataset management --------------------------------------------
+
+const CSV: &str = "city,pop\nAustin,1000\nDallas,2000\n";
+
+async fn dataset_names(router: &Router) -> Vec<String> {
+    let (_s, _h, body) = send(router, get("/api/almagest/datasets")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn schema_table_names(router: &Router) -> Vec<String> {
+    let (_s, _h, body) = send(router, get("/api/almagest/schema")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    v["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn ingest_csv_persists_and_registers_for_query() {
+    let fx = fixture();
+    let req = post_bytes(
+        "/api/almagest/datasets?format=csv&name=cities",
+        "text/csv",
+        CSV,
+    );
+    let (status, _h, body) = send(&fx.router, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(res["dry_run"], false);
+    assert_eq!(res["datasets"][0]["name"], "cities");
+    assert_eq!(res["datasets"][0]["row_count"], 2);
+
+    // Listed, and — crucially — registered in the rebuilt query context.
+    assert!(
+        dataset_names(&fx.router)
+            .await
+            .contains(&"cities".to_string())
+    );
+    assert!(
+        schema_table_names(&fx.router)
+            .await
+            .contains(&"cities".to_string())
+    );
+}
+
+#[tokio::test]
+async fn ingest_dry_run_previews_without_persisting() {
+    let fx = fixture();
+    let req = post_bytes(
+        "/api/almagest/datasets?format=csv&name=preview_me&dry_run=true",
+        "text/csv",
+        CSV,
+    );
+    let (status, _h, body) = send(&fx.router, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(res["dry_run"], true);
+    assert_eq!(res["datasets"][0]["columns"].as_array().unwrap().len(), 2);
+
+    // Nothing was written to the real file.
+    assert!(
+        !dataset_names(&fx.router)
+            .await
+            .contains(&"preview_me".to_string())
+    );
+}
+
+#[tokio::test]
+async fn ingest_json_ndjson_autodetect() {
+    let fx = fixture();
+    let ndjson = "{\"a\":1,\"b\":\"x\"}\n{\"a\":2,\"b\":\"y\"}\n";
+    let req = post_bytes(
+        "/api/almagest/datasets?format=json&name=events",
+        "application/json",
+        ndjson,
+    );
+    let (status, _h, body) = send(&fx.router, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(res["datasets"][0]["row_count"], 2);
+}
+
+#[tokio::test]
+async fn ingest_infers_format_from_filename() {
+    let fx = fixture();
+    let req = post_bytes("/api/almagest/datasets?filename=towns.csv", "text/csv", CSV);
+    let (status, _h, _b) = send(&fx.router, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        dataset_names(&fx.router)
+            .await
+            .contains(&"towns".to_string())
+    );
+}
+
+#[tokio::test]
+async fn ingest_empty_and_unknown_format_are_bad_request() {
+    let fx = fixture();
+    let (s1, _h, _b) = send(
+        &fx.router,
+        post_bytes("/api/almagest/datasets?format=csv", "text/csv", ""),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::BAD_REQUEST);
+
+    let (s2, _h, _b) = send(
+        &fx.router,
+        post_bytes("/api/almagest/datasets?format=xlsx", "x", CSV),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::BAD_REQUEST);
+
+    let (s3, _h, _b) = send(&fx.router, post_bytes("/api/almagest/datasets", "x", CSV)).await;
+    assert_eq!(s3, StatusCode::BAD_REQUEST); // no format and no filename
+}
+
+#[tokio::test]
+async fn rename_then_delete_dataset() {
+    let fx = fixture();
+    // The fixture already has `sales`. Rename it.
+    let req = post_json(
+        "/api/almagest/datasets/sales/rename",
+        serde_json::json!({ "to": "revenue" }),
+    );
+    let (status, _h, _b) = send(&fx.router, req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let tables = schema_table_names(&fx.router).await;
+    assert!(tables.contains(&"revenue".to_string()));
+    assert!(!tables.contains(&"sales".to_string()));
+
+    // Delete it.
+    let del = Request::builder()
+        .method("DELETE")
+        .uri("/api/almagest/datasets/revenue")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _h, _b) = send(&fx.router, del).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(
+        !schema_table_names(&fx.router)
+            .await
+            .contains(&"revenue".to_string())
+    );
+}
+
+#[tokio::test]
+async fn delete_missing_dataset_is_404() {
+    let fx = fixture();
+    let del = Request::builder()
+        .method("DELETE")
+        .uri("/api/almagest/datasets/nope")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _h, _b) = send(&fx.router, del).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// --- asset upload / delete ---------------------------------------------------
+
+#[tokio::test]
+async fn asset_upload_get_delete_roundtrip() {
+    let fx = fixture();
+    let png = vec![0x89u8, 0x50, 0x4e, 0x47, 1, 2, 3, 4];
+
+    let put = Request::builder()
+        .method("PUT")
+        .uri("/api/almagest/assets/logo.png")
+        .header(header::CONTENT_TYPE, "image/png")
+        .body(Body::from(png.clone()))
+        .unwrap();
+    let (status, _h, _b) = send(&fx.router, put).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Listed.
+    let (_s, _h, body) = send(&fx.router, get("/api/almagest/assets")).await;
+    let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(list[0]["path"], "logo.png");
+
+    // Fetched with the right type and bytes.
+    let (status, headers, body) = send(&fx.router, get("/api/almagest/assets/logo.png")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "image/png");
+    assert_eq!(body, png);
+
+    // Deleted.
+    let del = Request::builder()
+        .method("DELETE")
+        .uri("/api/almagest/assets/logo.png")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _h, _b) = send(&fx.router, del).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _h, _b) = send(&fx.router, get("/api/almagest/assets/logo.png")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

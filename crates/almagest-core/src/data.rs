@@ -283,6 +283,34 @@ impl AlmagestFile {
         Ok(n > 0)
     }
 
+    /// Rename a dataset (the table name queries reference). Errors if `from`
+    /// doesn't exist or `to` is already taken. The caller is responsible for
+    /// rebuilding any open query context so the new name is registered.
+    pub fn rename_dataset(&mut self, from: &str, to: &str) -> Result<()> {
+        if to.trim().is_empty() {
+            return Err(AlmagestError::Invalid(
+                "new dataset name must not be empty".into(),
+            ));
+        }
+        if self.dataset_meta(to).is_ok() {
+            return Err(AlmagestError::Invalid(format!(
+                "a dataset named '{to}' already exists"
+            )));
+        }
+        let now = crate::now_rfc3339();
+        let n = self.conn().execute(
+            "UPDATE almagest_data SET name = ?2, updated_at = ?3 WHERE name = ?1",
+            rusqlite::params![from, to, now],
+        )?;
+        if n == 0 {
+            return Err(AlmagestError::NotFound {
+                kind: "dataset",
+                id: from.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     /// Export a dataset's stored blob to a standalone `.parquet` file on disk.
     ///
     /// The bytes are written verbatim — the blob already *is* a Parquet file —

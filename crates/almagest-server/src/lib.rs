@@ -24,6 +24,7 @@
 //! preview, asset upload, and auth land with later phases.
 
 mod api;
+mod datasets;
 mod error;
 mod events;
 mod state;
@@ -38,6 +39,7 @@ pub use state::{AppState, ServerEvent};
 use almagest_core::AlmagestFile;
 use almagest_query::AlmagestQueryContext;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -159,12 +161,28 @@ pub(crate) fn build_router(state: AppState, enable_cors: bool) -> Router {
         .route("/schema", get(api::get_schema))
         .route("/panels/execute", post(api::execute_panel))
         .route("/options", post(api::resolve_options))
+        .route(
+            "/datasets",
+            get(datasets::list_datasets).post(datasets::ingest),
+        )
+        .route(
+            "/datasets/{name}",
+            get(datasets::get_dataset).delete(datasets::delete_dataset),
+        )
+        .route("/datasets/{name}/rename", post(datasets::rename_dataset))
         .route("/assets", get(api::list_assets))
-        .route("/assets/{*path}", get(api::get_asset))
+        .route(
+            "/assets/{*path}",
+            get(api::get_asset)
+                .put(api::upload_asset)
+                .delete(api::delete_asset),
+        )
         .route("/export/dashboard/{id}", post(api::export_dashboard))
         .route("/import/dashboard", post(api::import_dashboard))
         .route("/events", get(events::ws_events))
-        .route("/shutdown", post(api::shutdown));
+        .route("/shutdown", post(api::shutdown))
+        // Author-time uploads (ingest, assets) can be large — lift the 2 MB default.
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024));
 
     let mut router = Router::new()
         .route("/", get(static_assets::serve_index))

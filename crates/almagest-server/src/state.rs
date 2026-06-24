@@ -10,7 +10,7 @@
 use almagest_core::AlmagestFile;
 use almagest_query::AlmagestQueryContext;
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::{Notify, broadcast};
 
 /// State shared across all request handlers. Cheap to clone.
@@ -20,9 +20,12 @@ pub struct AppState {
     /// but not `Sync`; the lock is only ever held for short, synchronous bursts
     /// (never across an `.await`).
     pub file: Arc<Mutex<AlmagestFile>>,
-    /// The in-memory query engine over the file's embedded data. Built once at
-    /// open; `Send + Sync` so it is shared directly.
-    pub query: Arc<AlmagestQueryContext>,
+    /// The in-memory query engine over the file's embedded data, behind an
+    /// `RwLock` so author-time data mutations (ingest / rename / delete) can swap
+    /// in a freshly-built context. Handlers clone the inner `Arc` out under a
+    /// short read lock, then run async work on the clone (never holding the lock
+    /// across an `.await`).
+    query: Arc<RwLock<Arc<AlmagestQueryContext>>>,
     /// Broadcast channel for real-time events to connected WebSocket clients.
     pub events: broadcast::Sender<ServerEvent>,
     /// Fired to request a graceful shutdown (desktop "close" / `/shutdown`).
@@ -35,7 +38,7 @@ impl AppState {
         let (events, _) = broadcast::channel(64);
         Self {
             file: Arc::new(Mutex::new(file)),
-            query: Arc::new(query),
+            query: Arc::new(RwLock::new(Arc::new(query))),
             events,
             shutdown: Arc::new(Notify::new()),
         }
@@ -44,6 +47,20 @@ impl AppState {
     /// Lock the file. Callers must not hold the guard across an `.await`.
     pub fn file(&self) -> std::sync::MutexGuard<'_, AlmagestFile> {
         self.file.lock().expect("almagest file mutex poisoned")
+    }
+
+    /// Snapshot the current query context. Cheap `Arc` clone; the returned handle
+    /// stays valid for an async query even if the context is later swapped.
+    pub fn query(&self) -> Arc<AlmagestQueryContext> {
+        self.query.read().expect("query rwlock poisoned").clone()
+    }
+
+    /// Rebuild the query context from the (mutated) file and swap it in, so newly
+    /// ingested / renamed / removed datasets are registered for querying.
+    pub fn rebuild_query(&self, file: &AlmagestFile) -> almagest_query::Result<()> {
+        let rebuilt = AlmagestQueryContext::open(file)?;
+        *self.query.write().expect("query rwlock poisoned") = Arc::new(rebuilt);
+        Ok(())
     }
 
     /// Best-effort broadcast of an event (a send with no receivers is fine).
@@ -69,6 +86,14 @@ pub enum ServerEvent {
     },
     /// The query result cache was invalidated.
     CacheInvalidated,
+    /// A dataset was added, replaced, renamed, or removed — clients should
+    /// refresh the schema and re-run panels.
+    DataChanged,
+    /// An embedded asset was uploaded or removed.
+    AssetChanged {
+        /// The affected asset path.
+        path: String,
+    },
     /// A heartbeat to keep the connection alive and let clients detect drop.
     Heartbeat,
 }

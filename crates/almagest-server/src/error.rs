@@ -7,6 +7,7 @@
 //! the doc-08 REST conventions. Lower-layer errors ([`AlmagestError`],
 //! [`QueryError`]) map into this type so handlers can use `?` freely.
 
+use almagest_connectors::ImportError;
 use almagest_core::AlmagestError;
 use almagest_query::QueryError;
 use axum::Json;
@@ -95,6 +96,24 @@ impl From<AlmagestError> for ApiError {
                 ApiError::bad_request(e.to_string())
             }
             AlmagestError::Serde(_) => ApiError::bad_request(e.to_string()),
+            other => ApiError::internal(other.to_string()),
+        }
+    }
+}
+
+impl From<ImportError> for ApiError {
+    fn from(e: ImportError) -> Self {
+        match e {
+            // The caller's upload is at fault: bad/empty/unsupported source, a
+            // name clash, or a malformed record.
+            ImportError::SourceNotFound { .. }
+            | ImportError::SourceUnreadable { .. }
+            | ImportError::UnsupportedFormat { .. }
+            | ImportError::SchemaInferenceFailed { .. }
+            | ImportError::MalformedRecord { .. }
+            | ImportError::EmptySource { .. }
+            | ImportError::NameCollision { .. } => ApiError::bad_request(e.to_string()),
+            ImportError::WriteFailed(inner) => inner.into(),
             other => ApiError::internal(other.to_string()),
         }
     }

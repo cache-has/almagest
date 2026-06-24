@@ -208,7 +208,7 @@ pub async fn import_dashboard(
 
 /// `GET /api/almagest/schema` — the registered tables and their columns.
 pub async fn get_schema(State(state): State<AppState>) -> Json<almagest_query::DatabaseSchema> {
-    Json(state.query.schema())
+    Json(state.query().schema())
 }
 
 // --- panel execution ---------------------------------------------------------
@@ -258,7 +258,7 @@ pub async fn execute_panel(
 
     let today = chrono::Utc::now().date_naive();
     let params = almagest_query::resolve_parameters(&decls, &req.parameters, today)?;
-    let result = state.query.execute(&sql, &params).await?;
+    let result = state.query().execute(&sql, &params).await?;
 
     let body = encode_arrow_ipc(&result)?;
     let headers = [
@@ -341,7 +341,7 @@ pub async fn resolve_options(
 
     let options = match source {
         OptionSource::Static(v) => v,
-        OptionSource::Query(sql) => state.query.resolve_options(&sql).await?,
+        OptionSource::Query(sql) => state.query().resolve_options(&sql).await?,
     };
     Ok(Json(OptionsResponse { options }))
 }
@@ -386,6 +386,46 @@ pub async fn get_asset(
         ],
         asset.content,
     ))
+}
+
+/// `PUT /api/almagest/assets/*path` — upload (or replace) an embedded asset. The
+/// body is the raw bytes; the content type comes from the request header, or is
+/// guessed from the path extension when absent.
+pub async fn upload_asset(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> ApiResult<StatusCode> {
+    if body.is_empty() {
+        return Err(ApiError::bad_request("asset body is empty"));
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty() && *v != "application/octet-stream");
+    {
+        let mut file = state.file();
+        file.put_asset(&path, &body, content_type)?;
+    }
+    state.emit(ServerEvent::AssetChanged { path });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/almagest/assets/*path` — remove an embedded asset.
+pub async fn delete_asset(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+) -> ApiResult<StatusCode> {
+    let removed = {
+        let mut file = state.file();
+        file.remove_asset(&path)?
+    };
+    if !removed {
+        return Err(ApiError::not_found(format!("asset '{path}' not found")));
+    }
+    state.emit(ServerEvent::AssetChanged { path });
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // --- lifecycle ---------------------------------------------------------------

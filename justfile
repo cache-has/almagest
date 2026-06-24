@@ -5,10 +5,21 @@
 default:
     @just --list
 
-# Build backend (and frontend if present)
-build:
+# Install frontend dependencies
+frontend-install:
+    cd frontend && npm install
+
+# Build the frontend bundle into frontend/dist (embedded by the server)
+frontend:
+    cd frontend && npm run build
+
+# Type-check the frontend
+frontend-check:
+    cd frontend && npm run check
+
+# Build backend and frontend
+build: frontend
     cargo build --workspace
-    [ -d frontend ] && cd frontend && npm run build || true
 
 # Run all tests
 test:
@@ -33,8 +44,7 @@ dev *ARGS:
     cargo run --bin almagest -- {{ARGS}}
 
 # Build an optimized release binary with embedded frontend
-release:
-    [ -d frontend ] && cd frontend && npm run build || true
+release: frontend
     cargo build --release --bin almagest
 
 # Report release binary size

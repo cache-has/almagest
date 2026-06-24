@@ -6,10 +6,24 @@ powers every interactive deploy mode (desktop browser-serve, headless serve,
 embedded-at-a-URL) and is embedded into the Rust binary at build time via
 `rust-embed`.
 
-**Status:** intentionally deferred. The toolchain (Vite, Svelte 5, TS) is stood
-up in Phase 09 (frontend editor) / Phase 10 (viewer), once the server exposes an
-API worth rendering. Scaffolding it earlier would only rot. See
-`planning/09-frontend-editor.md` and `planning/10-frontend-viewer.md`.
+**Status:** Phase 09 foundation built. Vite + Svelte 5 + TS SPA over the Phase 08
+JSON API, with the shared rendering pipeline (grid, all six panel kinds incl.
+ECharts charts, parameter bar), a read-only **Viewer**, and a functional minimal
+**Studio editor**. See `planning/09-frontend-editor.md` for what's done vs.
+deferred (Monaco/CodeMirror, drag-resize, data-manager ingest, asset upload,
+saved-query manager, undo/redo, Playwright e2e). Viewer-specific polish is
+`planning/10-frontend-viewer.md`.
+
+## Develop
+
+```sh
+just frontend-install     # npm install
+npm run dev               # Vite dev server, proxies /api → localhost:8080
+# in another shell: almagest serve some.alm --port 8080
+```
+
+A production build (`just frontend` or `npm run build`) emits `frontend/dist`,
+which `almagest-server` embeds via `rust-embed`. Type-check with `npm run check`.
 
 ## Architectural commitments (decided up front)
 
