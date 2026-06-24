@@ -19,6 +19,7 @@ mod error;
 mod file;
 mod metadata;
 mod migrations;
+mod queries;
 mod schema;
 
 pub use almagest_format::{DurationUnit, Format, FormatValue};
@@ -33,6 +34,7 @@ pub use dashboards::DashboardRecord;
 pub use data::{Compression, DatasetMeta};
 pub use error::{AlmagestError, Result};
 pub use file::AlmagestFile;
+pub use queries::SavedQuery;
 
 /// Current UTC timestamp as an RFC 3339 string — the one timestamp format used
 /// throughout the `almagest_*` tables.

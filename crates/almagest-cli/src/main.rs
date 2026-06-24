@@ -2,11 +2,14 @@
 
 //! The `almagest` command-line interface.
 //!
-//! Phase 01 wires up the command surface and a working `--version`. The
-//! subcommands are stubbed and fleshed out in later phases:
-//! `new`/`open`/`serve`/`export` map to the format, server, and deployment work.
+//! `new` creates an empty `.alm`; `open` and `serve` start the HTTP server
+//! (Phase 08) in desktop (ephemeral port, auto-open browser) and headless
+//! (fixed port, long-lived) modes respectively. `export` is fleshed out in
+//! Phase 11.
 
-use anyhow::Result;
+use almagest_core::AlmagestFile;
+use almagest_server::{ServerOptions, start_server};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -66,7 +69,8 @@ fn init_tracing(verbose: u8) {
         .init();
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
 
@@ -77,11 +81,10 @@ fn main() -> Result<()> {
             println!("Dashboards as files, not services. Try `almagest --help`.");
             Ok(())
         }
-        Some(Command::New { path }) => not_yet("new", &path),
-        Some(Command::Open { path }) => not_yet("open", &path),
+        Some(Command::New { path }) => cmd_new(&path),
+        Some(Command::Open { path }) => cmd_serve(&path, ServerOptions::desktop()).await,
         Some(Command::Serve { path, port }) => {
-            tracing::info!(?path, port, "serve is not yet implemented");
-            anyhow::bail!("`almagest serve` is not yet implemented (Phase 08)")
+            cmd_serve(&path, ServerOptions::headless(port)).await
         }
         Some(Command::Export { path, output }) => {
             tracing::info!(?path, ?output, "export is not yet implemented");
@@ -90,7 +93,27 @@ fn main() -> Result<()> {
     }
 }
 
-fn not_yet(cmd: &str, path: &std::path::Path) -> Result<()> {
-    tracing::info!(?path, "command `{cmd}` is not yet implemented");
-    anyhow::bail!("`almagest {cmd}` is not yet implemented")
+/// Create a new, empty `.alm` file.
+fn cmd_new(path: &std::path::Path) -> Result<()> {
+    let file =
+        AlmagestFile::create(path).with_context(|| format!("creating {}", path.display()))?;
+    file.close().context("finalizing the new file")?;
+    println!("Created {}", path.display());
+    Ok(())
+}
+
+/// Start the server for `path` and run until shutdown (Ctrl-C / SIGTERM, or the
+/// frontend's shutdown call in desktop mode).
+async fn cmd_serve(path: &std::path::Path, options: ServerOptions) -> Result<()> {
+    if !path.exists() {
+        anyhow::bail!("{} does not exist", path.display());
+    }
+    let handle = start_server(path, options)
+        .await
+        .with_context(|| format!("starting server for {}", path.display()))?;
+    println!("Almagest serving {} at {}", path.display(), handle.url());
+    println!("Press Ctrl-C to stop.");
+    handle.join().await.context("server task failed")?;
+    println!("Server stopped.");
+    Ok(())
 }

@@ -172,7 +172,15 @@ impl AlmagestFile {
         folder: Option<&str>,
     ) -> Result<String> {
         let json = std::fs::read_to_string(path)?;
-        let dash = Dashboard::from_json(&json)?;
+        self.import_dashboard(&json, folder)
+    }
+
+    /// Import a dashboard from a standalone JSON string (the in-memory form of
+    /// [`AlmagestFile::import_dashboard_json`]): parse, validate, check that any
+    /// referenced saved queries exist, then save it. Returns the new id. The
+    /// HTTP import endpoint uses this so it never touches the filesystem.
+    pub fn import_dashboard(&mut self, json: &str, folder: Option<&str>) -> Result<String> {
+        let dash = Dashboard::from_json(json)?;
         self.check_query_references(&dash)?;
         self.save_dashboard(&dash, folder)
     }
