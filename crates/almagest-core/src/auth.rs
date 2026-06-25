@@ -51,19 +51,10 @@ impl Role {
         }
     }
 
-    /// Whether this role meets or exceeds `required`.
+    /// Whether this role meets or exceeds `required`. Authorization checks use
+    /// this (via the server's `require_editor`/`require_admin`).
     pub fn satisfies(self, required: Role) -> bool {
         self.rank() >= required.rank()
-    }
-
-    /// Whether this role may create/modify dashboards and data.
-    pub fn can_edit(self) -> bool {
-        self.satisfies(Role::Editor)
-    }
-
-    /// Whether this role may manage users and file-level config.
-    pub fn can_admin(self) -> bool {
-        self == Role::Admin
     }
 }
 
@@ -161,16 +152,6 @@ impl AlmagestFile {
         self.conn().execute(
             "UPDATE almagest_auth SET session_secret = ?1, updated_at = ?2 WHERE id = 1",
             rusqlite::params![secret, now],
-        )?;
-        Ok(())
-    }
-
-    /// Set the session lifetime (seconds).
-    pub fn set_session_lifetime(&self, secs: i64) -> Result<()> {
-        let now = crate::now_rfc3339();
-        self.conn().execute(
-            "UPDATE almagest_auth SET session_lifetime_secs = ?1, updated_at = ?2 WHERE id = 1",
-            rusqlite::params![secs, now],
         )?;
         Ok(())
     }
@@ -362,14 +343,14 @@ mod tests {
         let (_d, file) = new_file();
         file.set_session_secret(b"0123456789abcdef").unwrap();
         file.set_auth_enabled(true).unwrap();
-        file.set_session_lifetime(3600).unwrap();
         let cfg = file.auth_config().unwrap();
         assert!(cfg.enabled);
         assert_eq!(
             cfg.session_secret.as_deref(),
             Some(&b"0123456789abcdef"[..])
         );
-        assert_eq!(cfg.session_lifetime_secs, 3600);
+        // Lifetime keeps its migration default (no setter surface yet).
+        assert_eq!(cfg.session_lifetime_secs, 86400);
     }
 
     #[test]
@@ -417,10 +398,7 @@ mod tests {
         assert!(Role::Admin.satisfies(Role::Editor));
         assert!(Role::Editor.satisfies(Role::Viewer));
         assert!(!Role::Viewer.satisfies(Role::Editor));
-        assert!(Role::Admin.can_admin());
-        assert!(!Role::Editor.can_admin());
-        assert!(Role::Editor.can_edit());
-        assert!(!Role::Viewer.can_edit());
+        assert!(!Role::Viewer.satisfies(Role::Admin));
     }
 
     #[test]

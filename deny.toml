@@ -1,24 +1,47 @@
+# cargo-deny configuration. Schema for cargo-deny >= 0.16 (the version the
+# `EmbarkStudios/cargo-deny-action@v2` CI job pulls). Security vulnerabilities are
+# always denied and are no longer a configurable key; `[licenses]` is a pure
+# allow-list (a crate whose license isn't listed, with no per-crate exception,
+# fails the check).
+
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
+# Scope of the `unmaintained` advisory check. "workspace" flags unmaintained
+# crates we depend on directly, but not deep transitive ones we can't act on
+# (e.g. `paste`, RUSTSEC-2024-0436, pulled via arrow/datafusion) — those would
+# otherwise break CI on every upstream archival. Security vulnerabilities are
+# always denied regardless of this scope.
+unmaintained = "workspace"
+# A yanked crate version is a warning, not a build-breaking error.
 yanked = "warn"
+# Advisory IDs to silence (none today).
+ignore = []
 
 [licenses]
-unlicensed = "deny"
+# Skip license detection from text below this confidence.
+confidence-threshold = 0.8
+# Every license expression present in the dependency tree must resolve to a
+# license listed here. Kept a superset of what the tree currently needs so a new
+# permissive transitive dep doesn't immediately break CI.
 allow = [
     "MIT",
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception", # standalone in a couple of low-level crates
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-3.0",
+    "CC0-1.0",       # public-domain dedication (e.g. tiny-keccak)
+    "Unicode-3.0",   # unicode-ident and friends
     "Unicode-DFS-2016",
     "Zlib",
-    "OpenSSL",
     "MPL-2.0",
+    "bzip2-1.0.6",   # permissive bzip2 license (bzip2-sys, pulled transitively)
 ]
 
 [bans]
+# A dep appearing at multiple versions is a warning (common with a large tree),
+# not a failure. Wildcard version requirements are forbidden — the intra-workspace
+# `almagest-*` deps carry explicit versions (see workspace.dependencies), so they
+# are not wildcards.
 multiple-versions = "warn"
 wildcards = "deny"
 

@@ -157,14 +157,6 @@ export const api = {
     }).then((r) => r.options);
   },
 
-  exportDashboard: async (id: string): Promise<string> => {
-    const res = await fetch(`${BASE}/export/dashboard/${encodeURIComponent(id)}`, {
-      method: "POST",
-    });
-    if (!res.ok) await failure(res);
-    return res.text();
-  },
-
   importDashboard: (dashboard: Dashboard) =>
     sendJson<{ id: string }>("POST", "/import/dashboard", dashboard),
 

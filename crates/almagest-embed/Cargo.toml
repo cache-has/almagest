@@ -9,12 +9,14 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-almagest-core.workspace = true
 almagest-server.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Only the integration test (which bakes a .alm) and example touch core directly;
+# the embedding library itself talks to the server crate.
+almagest-core.workspace = true
 tempfile.workspace = true
 arrow.workspace = true
 tracing-subscriber.workspace = true

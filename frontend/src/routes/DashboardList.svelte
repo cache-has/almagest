@@ -41,6 +41,16 @@
       error = e instanceof ApiError ? e.message : String(e);
     }
   }
+
+  async function remove(d: DashboardSummary) {
+    if (!confirm(`Delete dashboard "${d.name}"? This cannot be undone.`)) return;
+    try {
+      await api.deleteDashboard(d.id);
+      await load();
+    } catch (e) {
+      error = e instanceof ApiError ? e.message : String(e);
+    }
+  }
 </script>
 
 <div class="list">
@@ -69,6 +79,7 @@
           <div class="actions">
             <a href={`#/view/${d.id}`}>View</a>
             {#if editable}<a href={`#/edit/${d.id}`}>Edit</a>{/if}
+            {#if editable}<button class="del" onclick={() => remove(d)}>Delete</button>{/if}
           </div>
         </li>
       {/each}
@@ -129,6 +140,14 @@
   .actions a {
     color: var(--accent, #1c7ed6);
     text-decoration: none;
+    font-size: 0.9rem;
+  }
+  .actions .del {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--bad, #e03131);
     font-size: 0.9rem;
   }
   .primary {

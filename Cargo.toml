@@ -19,17 +19,19 @@ authors = ["Cache McClure <cache@horizonanalytic.com>"]
 rust-version = "1.96"
 
 [workspace.dependencies]
-# Internal crates
-almagest-format = { path = "crates/almagest-format" }
-almagest-core = { path = "crates/almagest-core" }
-almagest-query = { path = "crates/almagest-query" }
-almagest-connectors = { path = "crates/almagest-connectors" }
-almagest-server = { path = "crates/almagest-server" }
-almagest-embed = { path = "crates/almagest-embed" }
+# Internal crates. Carry an explicit `version` (matching workspace.package.version)
+# alongside `path` so these are valid as published crates.io deps — Cargo resolves
+# them by path locally and by version when published. Bump in lockstep with the
+# workspace version.
+almagest-format = { path = "crates/almagest-format", version = "0.1.0" }
+almagest-core = { path = "crates/almagest-core", version = "0.1.0" }
+almagest-query = { path = "crates/almagest-query", version = "0.1.0" }
+almagest-connectors = { path = "crates/almagest-connectors", version = "0.1.0" }
+almagest-server = { path = "crates/almagest-server", version = "0.1.0" }
+almagest-embed = { path = "crates/almagest-embed", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
 
 # Web framework
 axum = { version = "0.8", features = ["ws"] }
