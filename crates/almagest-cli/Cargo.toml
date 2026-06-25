@@ -14,14 +14,19 @@ path = "src/main.rs"
 
 [dependencies]
 almagest-core.workspace = true
+almagest-connectors.workspace = true
+almagest-query.workspace = true
 almagest-server.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+rpassword.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

@@ -22,6 +22,11 @@ pub async fn serve_index() -> Response {
     serve_path("index.html")
 }
 
+/// Count of embedded frontend files (for `almagest doctor`).
+pub(crate) fn frontend_asset_count() -> usize {
+    FrontendAssets::iter().count()
+}
+
 /// The built bundle's JS and CSS, concatenated, for inlining into a static
 /// export (the snapshot HTML carries the renderer with it). The Vite build emits
 /// a single JS and single CSS chunk; if that ever changes, all chunks are

@@ -38,10 +38,20 @@ mod static_assets;
 mod tests;
 
 pub use auth::CurrentUser;
+// Auth primitives the CLI reuses for offline user management (doc 14): hashing,
+// secret generation, password policy, and temp-password generation all live in
+// this crate's `auth` module to keep crypto out of `almagest-core`.
+pub use auth::{generate_secret, generate_temp_password, hash_password, validate_password};
 pub use axum::http::HeaderMap;
 pub use error::{ApiError, ApiResult};
 pub use export::export_snapshot_html;
 pub use state::{AppState, ServerEvent};
+
+/// Number of embedded frontend assets baked into the binary. Zero means the
+/// frontend bundle wasn't built before compiling — `almagest doctor` flags it.
+pub fn frontend_asset_count() -> usize {
+    static_assets::frontend_asset_count()
+}
 
 use almagest_core::AlmagestFile;
 use almagest_query::AlmagestQueryContext;

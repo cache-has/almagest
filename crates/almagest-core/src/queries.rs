@@ -63,6 +63,22 @@ impl AlmagestFile {
         }
         Ok(out)
     }
+
+    /// Query-result cache stats: `(entry_count, total_bytes)`. Used by
+    /// `almagest info` for a quick health picture.
+    pub fn cache_stats(&self) -> Result<(u64, u64)> {
+        self.conn()
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(byte_size), 0) FROM almagest_cache",
+                [],
+                |r| {
+                    let count: i64 = r.get(0)?;
+                    let bytes: i64 = r.get(1)?;
+                    Ok((count as u64, bytes as u64))
+                },
+            )
+            .map_err(AlmagestError::Sqlite)
+    }
 }
 
 #[cfg(test)]

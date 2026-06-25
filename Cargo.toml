@@ -76,6 +76,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
+# Hidden password entry for interactive `almagest user` operations. Tiny
+# (std + libc/windows-sys, already in the tree); password can also come from
+# --password / $ALMAGEST_PASSWORD for scripting.
+rpassword = "7"
 
 # Static frontend embedding
 rust-embed = { version = "8", features = ["mime-guess"] }

@@ -61,3 +61,8 @@ pub const FORMAT_VERSION: u32 = 2;
 
 /// The crate (and binary) semantic version, sourced from Cargo at build time.
 pub const ALMAGEST_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The bundled SQLite library version (e.g. `"3.45.0"`), for `almagest doctor`.
+pub fn sqlite_version() -> &'static str {
+    rusqlite::version()
+}
