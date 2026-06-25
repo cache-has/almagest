@@ -13,6 +13,7 @@
 //! embedded-only. A `dry_run` ingests into a throwaway file and reports the
 //! inferred schema without touching the real one (the pre-commit preview).
 
+use crate::auth::CurrentUser;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, ServerEvent};
 use almagest_connectors::{
@@ -22,7 +23,7 @@ use almagest_connectors::{
 use almagest_core::{AlmagestFile, DatasetMeta};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -140,9 +141,11 @@ pub struct IngestQuery {
 /// `POST /api/almagest/datasets` — ingest an uploaded file as a dataset.
 pub async fn ingest(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Query(q): Query<IngestQuery>,
     body: Bytes,
 ) -> ApiResult<(StatusCode, Json<IngestResult>)> {
+    user.require_editor()?;
     state.ensure_writable()?;
     if body.is_empty() {
         return Err(ApiError::bad_request("upload body is empty"));
@@ -214,8 +217,10 @@ pub async fn get_dataset(
 /// `DELETE /api/almagest/datasets/:name` — remove a dataset.
 pub async fn delete_dataset(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Path(name): Path<String>,
 ) -> ApiResult<StatusCode> {
+    user.require_editor()?;
     state.ensure_writable()?;
     let removed = {
         let mut file = state.file();
@@ -239,9 +244,11 @@ pub struct RenameRequest {
 /// `POST /api/almagest/datasets/:name/rename` — rename a dataset.
 pub async fn rename_dataset(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Path(name): Path<String>,
     Json(req): Json<RenameRequest>,
 ) -> ApiResult<StatusCode> {
+    user.require_editor()?;
     state.ensure_writable()?;
     {
         let mut file = state.file();

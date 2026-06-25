@@ -162,7 +162,9 @@ async fn meta_reports_title_and_dashboard_count() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["title"], "Test Almagest");
     assert_eq!(v["dashboard_count"], 1);
-    assert_eq!(v["format_version"], 1);
+    assert_eq!(v["format_version"], almagest_core::FORMAT_VERSION);
+    // Auth is opt-in: a freshly created file is in no-auth mode.
+    assert_eq!(v["auth_enabled"], false);
 }
 
 #[tokio::test]
@@ -665,4 +667,439 @@ async fn heartbeat_endpoint_accepts_pings() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+// --- host-provided auth gate (embedding) -------------------------------------
+
+#[tokio::test]
+async fn auth_hook_gates_requests_by_header() {
+    use std::sync::Arc;
+    let fx = fixture();
+    // Require a specific host header to be present and correct.
+    let hook: crate::AuthHook = Arc::new(|headers: &header::HeaderMap| {
+        headers
+            .get("x-host-user")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == "trusted")
+            .unwrap_or(false)
+    });
+    let gated = crate::with_auth(fx.router.clone(), hook);
+
+    // No header → 401.
+    let (status, _h, _b) = send(&gated, get("/api/almagest")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Wrong header → 401.
+    let req = Request::builder()
+        .uri("/api/almagest")
+        .header("x-host-user", "imposter")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _h, _b) = send(&gated, req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Correct header → passes through to the handler.
+    let req = Request::builder()
+        .uri("/api/almagest")
+        .header("x-host-user", "trusted")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _h, _b) = send(&gated, req).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// --- local-account auth & multi-user (doc 13) --------------------------------
+
+/// Pull the `alm_session` / `alm_csrf` values out of a response's `Set-Cookie`
+/// headers and assemble a `Cookie` header value plus the CSRF token.
+fn auth_cookies(h: &axum::http::HeaderMap) -> (String, String) {
+    let mut session = String::new();
+    let mut csrf = String::new();
+    for v in h.get_all(header::SET_COOKIE) {
+        let s = v.to_str().unwrap();
+        if let Some(rest) = s.strip_prefix("alm_session=") {
+            session = rest.split(';').next().unwrap().to_string();
+        } else if let Some(rest) = s.strip_prefix("alm_csrf=") {
+            csrf = rest.split(';').next().unwrap().to_string();
+        }
+    }
+    (format!("alm_session={session}; alm_csrf={csrf}"), csrf)
+}
+
+/// A request carrying an auth cookie (and CSRF header for mutations).
+fn authed(
+    method: &str,
+    uri: &str,
+    cookie: &str,
+    csrf: &str,
+    json: Option<serde_json::Value>,
+) -> Request<Body> {
+    let mut b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::COOKIE, cookie)
+        .header("x-csrf-token", csrf);
+    if json.is_some() {
+        b = b.header(header::CONTENT_TYPE, "application/json");
+    }
+    let body = json
+        .map(|j| Body::from(j.to_string()))
+        .unwrap_or(Body::empty());
+    b.body(body).unwrap()
+}
+
+/// Run the first-admin setup flow on a fixture and return (cookie, csrf).
+async fn enable_auth_as_admin(fx: &Fixture) -> (String, String) {
+    let (status, h, body) = send(
+        &fx.router,
+        post_json(
+            "/api/almagest/auth/setup",
+            serde_json::json!({"username": "admin", "password": "supersecret"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "setup should succeed");
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["user"]["role"], "admin");
+    auth_cookies(&h)
+}
+
+#[tokio::test]
+async fn setup_enables_auth_then_me_reports_user() {
+    let fx = fixture();
+    // Before setup: auth off, me says needs no login.
+    let (_s, _h, body) = send(&fx.router, get("/api/almagest/auth/me")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["auth_enabled"], false);
+
+    let (cookie, _csrf) = enable_auth_as_admin(&fx).await;
+
+    // Auth is now enforced; meta advertises it.
+    let (_s, _h, body) = send(&fx.router, get("/api/almagest")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["auth_enabled"], true);
+
+    // me with the session cookie returns the admin user.
+    let (status, _h, body) = send(
+        &fx.router,
+        Request::builder()
+            .uri("/api/almagest/auth/me")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["user"]["username"], "admin");
+
+    // A second setup is rejected — the file already has an admin.
+    let (status, _h, _b) = send(
+        &fx.router,
+        post_json(
+            "/api/almagest/auth/setup",
+            serde_json::json!({"username": "x", "password": "anotherpw1"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn protected_routes_require_a_session() {
+    let fx = fixture();
+    let (cookie, _csrf) = enable_auth_as_admin(&fx).await;
+
+    // No cookie → 401.
+    let (status, _h, _b) = send(&fx.router, get("/api/almagest/dashboards")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // With the session cookie → 200.
+    let (status, _h, _b) = send(
+        &fx.router,
+        Request::builder()
+            .uri("/api/almagest/dashboards")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn login_rejects_bad_credentials() {
+    let fx = fixture();
+    enable_auth_as_admin(&fx).await;
+
+    let (status, _h, _b) = send(
+        &fx.router,
+        post_json(
+            "/api/almagest/auth/login",
+            serde_json::json!({"username": "admin", "password": "wrong"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Unknown user is also 401 (no user enumeration).
+    let (status, _h, _b) = send(
+        &fx.router,
+        post_json(
+            "/api/almagest/auth/login",
+            serde_json::json!({"username": "ghost", "password": "whatever1"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Correct credentials succeed.
+    let (status, _h, _b) = send(
+        &fx.router,
+        post_json(
+            "/api/almagest/auth/login",
+            serde_json::json!({"username": "admin", "password": "supersecret"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn csrf_required_for_writes() {
+    let fx = fixture();
+    let (cookie, csrf) = enable_auth_as_admin(&fx).await;
+    let dash = serde_json::json!({
+        "version": 1, "name": "New",
+        "layout": {"rows": [{"panels": [{"id": "t", "span": 12, "kind": "text", "content": "hi"}]}]}
+    });
+
+    // Session cookie but no CSRF header → 403.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/almagest/dashboards")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(dash.to_string()))
+        .unwrap();
+    let (status, _h, _b) = send(&fx.router, req).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // With the matching CSRF header → 201.
+    let (status, _h, _b) = send(
+        &fx.router,
+        authed(
+            "POST",
+            "/api/almagest/dashboards",
+            &cookie,
+            &csrf,
+            Some(dash),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn viewer_cannot_write_but_can_read() {
+    let fx = fixture();
+    let (admin_cookie, admin_csrf) = enable_auth_as_admin(&fx).await;
+
+    // Admin creates a viewer.
+    let (status, _h, _b) = send(
+        &fx.router,
+        authed(
+            "POST",
+            "/api/almagest/admin/users",
+            &admin_cookie,
+            &admin_csrf,
+            Some(
+                serde_json::json!({"username": "val", "password": "viewerpass1", "role": "viewer"}),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Log in as the viewer.
+    let (status, h, _b) = send(
+        &fx.router,
+        post_json(
+            "/api/almagest/auth/login",
+            serde_json::json!({"username": "val", "password": "viewerpass1"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (viewer_cookie, viewer_csrf) = auth_cookies(&h);
+
+    // Viewer can read dashboards.
+    let (status, _h, _b) = send(
+        &fx.router,
+        Request::builder()
+            .uri("/api/almagest/dashboards")
+            .header(header::COOKIE, &viewer_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Viewer cannot create a dashboard (403), even with a valid CSRF token.
+    let dash = serde_json::json!({
+        "version": 1, "name": "Nope",
+        "layout": {"rows": [{"panels": [{"id": "t", "span": 12, "kind": "text", "content": "x"}]}]}
+    });
+    let (status, _h, _b) = send(
+        &fx.router,
+        authed(
+            "POST",
+            "/api/almagest/dashboards",
+            &viewer_cookie,
+            &viewer_csrf,
+            Some(dash),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Viewer cannot reach admin endpoints.
+    let (status, _h, _b) = send(
+        &fx.router,
+        Request::builder()
+            .uri("/api/almagest/admin/users")
+            .header(header::COOKIE, &viewer_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn last_admin_is_protected() {
+    let fx = fixture();
+    let (cookie, csrf) = enable_auth_as_admin(&fx).await;
+
+    // Find the admin's id.
+    let (_s, _h, body) = send(
+        &fx.router,
+        Request::builder()
+            .uri("/api/almagest/admin/users")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let users: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let admin_id = users[0]["id"].as_str().unwrap().to_string();
+
+    // Demoting the sole admin is rejected.
+    let (status, _h, _b) = send(
+        &fx.router,
+        authed(
+            "PUT",
+            &format!("/api/almagest/admin/users/{admin_id}"),
+            &cookie,
+            &csrf,
+            Some(serde_json::json!({"role": "viewer"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Deleting the sole admin is rejected.
+    let (status, _h, _b) = send(
+        &fx.router,
+        authed(
+            "DELETE",
+            &format!("/api/almagest/admin/users/{admin_id}"),
+            &cookie,
+            &csrf,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn audit_log_records_auth_events() {
+    let fx = fixture();
+    let (cookie, _csrf) = enable_auth_as_admin(&fx).await;
+
+    let (status, _h, body) = send(
+        &fx.router,
+        Request::builder()
+            .uri("/api/almagest/admin/audit")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let kinds: Vec<&str> = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["event_kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"auth_enabled"), "kinds: {kinds:?}");
+    assert!(kinds.contains(&"login"), "kinds: {kinds:?}");
+    assert!(kinds.contains(&"user_created"), "kinds: {kinds:?}");
+}
+
+#[tokio::test]
+async fn change_password_then_login_with_new() {
+    let fx = fixture();
+    let (cookie, csrf) = enable_auth_as_admin(&fx).await;
+
+    // Wrong current password → 401.
+    let (status, _h, _b) = send(
+        &fx.router,
+        authed(
+            "POST",
+            "/api/almagest/auth/change-password",
+            &cookie,
+            &csrf,
+            Some(serde_json::json!({"current_password": "nope", "new_password": "brandnew123"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Correct current password → 204.
+    let (status, _h, _b) = send(
+        &fx.router,
+        authed(
+            "POST",
+            "/api/almagest/auth/change-password",
+            &cookie,
+            &csrf,
+            Some(serde_json::json!({"current_password": "supersecret", "new_password": "brandnew123"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The new password works; the old one doesn't.
+    let (status, _h, _b) = send(
+        &fx.router,
+        post_json(
+            "/api/almagest/auth/login",
+            serde_json::json!({"username": "admin", "password": "brandnew123"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _h, _b) = send(
+        &fx.router,
+        post_json(
+            "/api/almagest/auth/login",
+            serde_json::json!({"username": "admin", "password": "supersecret"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

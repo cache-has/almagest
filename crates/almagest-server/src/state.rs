@@ -7,10 +7,12 @@
 //! in-memory DataFusion query context built from the file's embedded Parquet
 //! blobs, a broadcast channel for WebSocket events, and a shutdown trigger.
 
+use crate::auth::LoginThrottle;
 use crate::error::{ApiError, ApiResult};
-use almagest_core::AlmagestFile;
+use almagest_core::{AlmagestFile, AuthConfig};
 use almagest_query::AlmagestQueryContext;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, broadcast};
@@ -40,6 +42,57 @@ pub struct AppState {
     heartbeat_enabled: bool,
     /// Last time a heartbeat was observed; the watchdog compares against it.
     last_heartbeat: Arc<Mutex<Instant>>,
+    /// Live auth state (enabled flag, session secret, lifetime) + login throttle,
+    /// mirrored from the file's `almagest_auth` config (doc 13). Cached here so the
+    /// per-request middleware never locks the file; refreshed via
+    /// [`AppState::reload_auth`] whenever the config changes.
+    pub auth: Arc<AuthRuntime>,
+}
+
+/// Cached auth configuration plus the in-memory login throttle. Mirrors the
+/// file's `almagest_auth` row so middleware can check it lock-free on every
+/// request; [`AppState::reload_auth`] re-syncs it after a config change.
+pub struct AuthRuntime {
+    enabled: AtomicBool,
+    lifetime_secs: AtomicI64,
+    secret: RwLock<Option<Vec<u8>>>,
+    /// Per-username failed-login throttle / lockout.
+    pub throttle: LoginThrottle,
+}
+
+impl AuthRuntime {
+    fn from_config(cfg: AuthConfig) -> Self {
+        Self {
+            enabled: AtomicBool::new(cfg.enabled),
+            lifetime_secs: AtomicI64::new(cfg.session_lifetime_secs),
+            secret: RwLock::new(cfg.session_secret),
+            throttle: LoginThrottle::default(),
+        }
+    }
+
+    /// Whether auth is enforced.
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// Session lifetime in seconds.
+    pub fn lifetime_secs(&self) -> i64 {
+        self.lifetime_secs.load(Ordering::Relaxed)
+    }
+
+    /// A clone of the current session-signing secret, if set.
+    pub fn secret(&self) -> Option<Vec<u8>> {
+        self.secret.read().expect("auth secret rwlock").clone()
+    }
+
+    /// Re-sync from a freshly read [`AuthConfig`] (after enable/disable/secret
+    /// change). The throttle state is preserved across reloads.
+    fn apply(&self, cfg: AuthConfig) {
+        self.enabled.store(cfg.enabled, Ordering::Relaxed);
+        self.lifetime_secs
+            .store(cfg.session_lifetime_secs, Ordering::Relaxed);
+        *self.secret.write().expect("auth secret rwlock") = cfg.session_secret;
+    }
 }
 
 impl AppState {
@@ -47,6 +100,13 @@ impl AppState {
     /// heartbeat watchdog by default; [`AppState::with_flags`] opts into either.
     pub fn new(file: AlmagestFile, query: AlmagestQueryContext) -> Self {
         let (events, _) = broadcast::channel(64);
+        // A freshly migrated file always has the almagest_auth row; fall back to a
+        // disabled default if it somehow can't be read so the server still starts.
+        let auth_cfg = file.auth_config().unwrap_or(AuthConfig {
+            enabled: false,
+            session_secret: None,
+            session_lifetime_secs: 86400,
+        });
         Self {
             file: Arc::new(Mutex::new(file)),
             query: Arc::new(RwLock::new(Arc::new(query))),
@@ -55,7 +115,16 @@ impl AppState {
             read_only: false,
             heartbeat_enabled: false,
             last_heartbeat: Arc::new(Mutex::new(Instant::now())),
+            auth: Arc::new(AuthRuntime::from_config(auth_cfg)),
         }
+    }
+
+    /// Re-read the file's auth config into the cached [`AuthRuntime`] after a
+    /// change (enable, disable, secret rotation). Cheap; call under no lock.
+    pub fn reload_auth(&self) -> ApiResult<()> {
+        let cfg = self.file().auth_config()?;
+        self.auth.apply(cfg);
+        Ok(())
     }
 
     /// Set the deploy-mode flags (read-only file, heartbeat lifecycle).
@@ -153,6 +222,9 @@ pub enum ServerEvent {
         /// The affected asset path.
         path: String,
     },
+    /// The file's auth configuration changed (enabled/disabled). Embedding hosts
+    /// can observe this; the SPA re-checks `/auth/me`.
+    AuthChanged,
     /// A heartbeat to keep the connection alive and let clients detect drop.
     Heartbeat,
 }

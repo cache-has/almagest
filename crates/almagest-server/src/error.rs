@@ -45,10 +45,25 @@ impl ApiError {
         Self::new(StatusCode::BAD_REQUEST, "bad_request", message)
     }
 
+    /// 401 Unauthorized — authentication is required or failed.
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", message)
+    }
+
     /// 403 Forbidden — the operation is not allowed (e.g. a write to a
-    /// read-only file).
+    /// read-only file, or insufficient role).
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::new(StatusCode::FORBIDDEN, "forbidden", message)
+    }
+
+    /// 409 Conflict — the write conflicts with an existing record.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "conflict", message)
+    }
+
+    /// 429 Too Many Requests — rate-limited (e.g. repeated failed logins).
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "too_many_requests", message)
     }
 
     /// 404 Not Found — the addressed entity does not exist.
@@ -101,6 +116,7 @@ impl From<AlmagestError> for ApiError {
             AlmagestError::InvalidDashboard { .. } | AlmagestError::Invalid(_) => {
                 ApiError::bad_request(e.to_string())
             }
+            AlmagestError::Conflict { .. } => ApiError::conflict(e.to_string()),
             AlmagestError::Serde(_) => ApiError::bad_request(e.to_string()),
             other => ApiError::internal(other.to_string()),
         }

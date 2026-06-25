@@ -58,6 +58,14 @@ datafusion = "53"
 # shared .alm shares its cache).
 sha2 = "0.10"
 
+# Auth (Phase 13): Argon2id password hashing + HMAC-signed session cookies.
+# Randomness (salts, session secret) comes from argon2's bundled
+# rand_core::OsRng, so no separate rand crate is pulled in.
+# `std` pulls in password-hash/std → rand_core/getrandom, exposing OsRng for
+# salt + session-secret generation (no separate rand crate needed).
+argon2 = { version = "0.5", features = ["std"] }
+hmac = "0.12"
+
 # Error handling
 thiserror = "2"
 anyhow = "1"

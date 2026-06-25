@@ -58,6 +58,15 @@ pub enum AlmagestError {
     #[error("invalid almagest operation: {0}")]
     Invalid(String),
 
+    /// A write conflicts with an existing record (e.g. a duplicate username).
+    #[error("{kind} conflict: {detail}")]
+    Conflict {
+        /// What kind of entity conflicted (e.g. "user").
+        kind: &'static str,
+        /// The human-readable conflict detail.
+        detail: String,
+    },
+
     /// A dashboard definition was structurally or semantically invalid. The
     /// message points at the offending field.
     #[error("invalid dashboard ({location}): {detail}")]

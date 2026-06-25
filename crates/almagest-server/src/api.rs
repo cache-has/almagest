@@ -9,12 +9,13 @@
 //! deliberately **no connection endpoints**: Almagest is embedded-only, so the
 //! doc's connection routes are cut.
 
+use crate::auth::CurrentUser;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, ServerEvent};
 use almagest_core::{Dashboard, Panel, Query};
 use arrow::ipc::writer::StreamWriter;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,8 @@ pub struct AlmagestMeta {
     pub read_only: bool,
     /// Whether the client should send heartbeats (desktop lifecycle).
     pub heartbeat_enabled: bool,
+    /// Whether local-account auth is enforced (the SPA gates on login).
+    pub auth_enabled: bool,
 }
 
 /// `GET /api/almagest` — file identity, title, version, dashboard count.
@@ -58,6 +61,7 @@ pub async fn get_meta(State(state): State<AppState>) -> ApiResult<Json<AlmagestM
         dashboard_count: file.list_dashboards()?.len(),
         read_only: state.read_only(),
         heartbeat_enabled: state.heartbeat_enabled(),
+        auth_enabled: state.auth.enabled(),
     }))
 }
 
@@ -130,8 +134,10 @@ pub struct CreatedId {
 /// `POST /api/almagest/dashboards` — create a dashboard from a typed body.
 pub async fn create_dashboard(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Json(body): Json<DashboardWrite>,
 ) -> ApiResult<(StatusCode, Json<CreatedId>)> {
+    user.require_editor()?;
     state.ensure_writable()?;
     let id = {
         let mut file = state.file();
@@ -146,9 +152,11 @@ pub async fn create_dashboard(
 /// `PUT /api/almagest/dashboards/:id` — replace a dashboard definition.
 pub async fn update_dashboard(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     Json(body): Json<DashboardWrite>,
 ) -> ApiResult<StatusCode> {
+    user.require_editor()?;
     state.ensure_writable()?;
     {
         let mut file = state.file();
@@ -161,8 +169,10 @@ pub async fn update_dashboard(
 /// `DELETE /api/almagest/dashboards/:id` — remove a dashboard.
 pub async fn delete_dashboard(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    user.require_editor()?;
     state.ensure_writable()?;
     let removed = {
         let mut file = state.file();
@@ -198,8 +208,10 @@ pub async fn export_dashboard(
 /// `POST /api/almagest/import/dashboard` — import a standalone dashboard JSON.
 pub async fn import_dashboard(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Json(dashboard): Json<Dashboard>,
 ) -> ApiResult<(StatusCode, Json<CreatedId>)> {
+    user.require_editor()?;
     state.ensure_writable()?;
     // Re-serialize to reuse the core import path (parse + query-ref check + save).
     let json = serde_json::to_string(&dashboard)
@@ -403,10 +415,12 @@ pub async fn get_asset(
 /// guessed from the path extension when absent.
 pub async fn upload_asset(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Path(path): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
+    user.require_editor()?;
     state.ensure_writable()?;
     if body.is_empty() {
         return Err(ApiError::bad_request("asset body is empty"));
@@ -426,8 +440,10 @@ pub async fn upload_asset(
 /// `DELETE /api/almagest/assets/*path` — remove an embedded asset.
 pub async fn delete_asset(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     Path(path): Path<String>,
 ) -> ApiResult<StatusCode> {
+    user.require_editor()?;
     state.ensure_writable()?;
     let removed = {
         let mut file = state.file();

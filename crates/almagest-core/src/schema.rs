@@ -120,13 +120,43 @@ CREATE TABLE almagest_assets (
 ) STRICT;
 "#;
 
+/// Auth & multi-user (doc 13). Extends `almagest_users` with the optional
+/// `email` / `last_login_at` columns the auth flows record, and adds a single-row
+/// `almagest_auth` table holding the per-file auth config: whether auth is
+/// enabled, the HMAC session-signing secret (file-scoped so sessions never leak
+/// across files), and the session lifetime. A v1 file picks all this up on open
+/// and stays in no-auth mode until an admin enables it.
+const V2_SQL: &str = r#"
+ALTER TABLE almagest_users ADD COLUMN email TEXT;
+ALTER TABLE almagest_users ADD COLUMN last_login_at TEXT;
+
+-- Single-row auth configuration (the CHECK pins it to one row).
+CREATE TABLE almagest_auth (
+    id                    INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled               INTEGER NOT NULL DEFAULT 0,
+    session_secret        BLOB,
+    session_lifetime_secs INTEGER NOT NULL DEFAULT 86400,
+    updated_at            TEXT NOT NULL
+) STRICT;
+
+INSERT INTO almagest_auth (id, enabled, session_secret, session_lifetime_secs, updated_at)
+VALUES (1, 0, NULL, 86400, '');
+"#;
+
 /// All migrations, in apply order. The last entry's `version` must equal
 /// [`crate::FORMAT_VERSION`] (asserted by a test).
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    description: "initial almagest v1 schema",
-    sql: V1_SQL,
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        description: "initial almagest v1 schema",
+        sql: V1_SQL,
+    },
+    Migration {
+        version: 2,
+        description: "auth & multi-user: users email/last_login_at + almagest_auth config",
+        sql: V2_SQL,
+    },
+];
 
 #[cfg(test)]
 mod tests {

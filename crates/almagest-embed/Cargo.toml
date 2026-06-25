@@ -11,3 +11,10 @@ rust-version.workspace = true
 [dependencies]
 almagest-core.workspace = true
 almagest-server.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+arrow.workspace = true
+tracing-subscriber.workspace = true

@@ -1,8 +1,11 @@
 <script lang="ts">
   import { api, ApiError } from "../lib/api";
   import { navigate } from "../lib/router";
+  import { canEdit } from "../lib/authState.svelte";
   import type { AlmagestMeta, DashboardSummary, Dashboard } from "../lib/types";
   import { DASHBOARD_DSL_VERSION } from "../lib/types";
+
+  const editable = $derived(canEdit());
 
   let meta = $state<AlmagestMeta | null>(null);
   let dashboards = $state<DashboardSummary[]>([]);
@@ -46,7 +49,7 @@
       <h1>{meta?.title || "Almagest"}</h1>
       {#if meta}<p class="sub">{meta.dashboard_count} dashboard{meta.dashboard_count === 1 ? "" : "s"} · format v{meta.format_version}</p>{/if}
     </div>
-    <button class="primary" onclick={createBlank}>New dashboard</button>
+    {#if editable}<button class="primary" onclick={createBlank}>New dashboard</button>{/if}
   </header>
 
   {#if loading}
@@ -65,7 +68,7 @@
           </div>
           <div class="actions">
             <a href={`#/view/${d.id}`}>View</a>
-            <a href={`#/edit/${d.id}`}>Edit</a>
+            {#if editable}<a href={`#/edit/${d.id}`}>Edit</a>{/if}
           </div>
         </li>
       {/each}

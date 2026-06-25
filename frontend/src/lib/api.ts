@@ -10,15 +10,38 @@ import { getSnapshot, base64ToBytes } from "./snapshotData";
 import type {
   AlmagestMeta,
   AssetEntry,
+  AuthMe,
+  AuthSession,
   Dashboard,
   DashboardSummary,
   DatabaseSchema,
   DatasetInfo,
+  HistoryEntry,
   IngestOptions,
   IngestResult,
+  Role,
+  User,
 } from "./types";
 
 const BASE = "/api/almagest";
+
+/** Read the double-submit CSRF token from the JS-readable `alm_csrf` cookie. */
+function csrfToken(): string | undefined {
+  const m = document.cookie.match(/(?:^|;\s*)alm_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : undefined;
+}
+
+/** Headers for a state-changing request: JSON content type + CSRF token. The
+ *  token is required by the server only when auth is enabled; sending it
+ *  unconditionally is harmless otherwise. */
+function writeHeaders(json: boolean, contentType?: string): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (json) h["Content-Type"] = "application/json";
+  else if (contentType) h["Content-Type"] = contentType;
+  const t = csrfToken();
+  if (t) h["X-CSRF-Token"] = t;
+  return h;
+}
 
 /** An empty Arrow result for panels with no baked snapshot data. */
 const EMPTY_RESULT: ArrowResult = { fields: [], rows: [], rowCount: 0 };
@@ -59,7 +82,7 @@ async function getJson<T>(path: string): Promise<T> {
 async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: writeHeaders(true),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) await failure(res);
@@ -81,6 +104,7 @@ export const api = {
         dashboard_count: 1,
         read_only: true,
         heartbeat_enabled: false,
+        auth_enabled: false,
       });
     }
     return getJson<AlmagestMeta>("");
@@ -170,7 +194,7 @@ export const api = {
     if (opts.delimiter) params.set("delimiter", opts.delimiter);
     const res = await fetch(`${BASE}/datasets?${params.toString()}`, {
       method: "POST",
-      headers: { "Content-Type": "application/octet-stream" },
+      headers: writeHeaders(false, "application/octet-stream"),
       body: file,
     });
     if (!res.ok) await failure(res);
@@ -182,16 +206,68 @@ export const api = {
   uploadAsset: async (path: string, file: File | Blob): Promise<void> => {
     const res = await fetch(assetUrl(path), {
       method: "PUT",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
+      headers: writeHeaders(false, file.type || "application/octet-stream"),
       body: file,
     });
     if (!res.ok) await failure(res);
   },
 
   deleteAsset: (path: string) =>
-    fetch(assetUrl(path), { method: "DELETE" }).then(async (res) => {
-      if (!res.ok) await failure(res);
+    fetch(assetUrl(path), { method: "DELETE", headers: writeHeaders(false) }).then(
+      async (res) => {
+        if (!res.ok) await failure(res);
+      },
+    ),
+
+  // --- auth & multi-user (doc 13) ---
+
+  me: () => getJson<AuthMe>("/auth/me"),
+
+  setup: (username: string, password: string, email?: string) =>
+    sendJson<AuthSession>("POST", "/auth/setup", { username, password, email }),
+
+  login: (username: string, password: string) =>
+    sendJson<AuthSession>("POST", "/auth/login", { username, password }),
+
+  logout: () => sendJson<void>("POST", "/auth/logout"),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    sendJson<void>("POST", "/auth/change-password", {
+      current_password: currentPassword,
+      new_password: newPassword,
     }),
+
+  // admin-only account management
+  listUsers: () => getJson<User[]>("/admin/users"),
+
+  createUser: (username: string, password: string, role: Role, email?: string) =>
+    sendJson<User>("POST", "/admin/users", { username, password, role, email }),
+
+  updateUserRole: (id: string, role: Role) =>
+    sendJson<void>("PUT", `/admin/users/${encodeURIComponent(id)}`, { role }),
+
+  deleteUser: (id: string) =>
+    sendJson<void>("DELETE", `/admin/users/${encodeURIComponent(id)}`),
+
+  resetPassword: (id: string) =>
+    sendJson<{ temporary_password: string }>(
+      "POST",
+      `/admin/users/${encodeURIComponent(id)}/reset-password`,
+    ),
+
+  unlockUser: (id: string) =>
+    sendJson<void>("POST", `/admin/users/${encodeURIComponent(id)}/unlock`),
+
+  audit: (opts?: { userId?: string; eventKind?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (opts?.userId) p.set("user_id", opts.userId);
+    if (opts?.eventKind) p.set("event_kind", opts.eventKind);
+    if (opts?.limit) p.set("limit", String(opts.limit));
+    const qs = p.toString();
+    return getJson<HistoryEntry[]>(`/admin/audit${qs ? `?${qs}` : ""}`);
+  },
+
+  disableAuth: () => sendJson<void>("POST", "/admin/auth/disable"),
 
   /** Execute a panel's query and decode the Arrow IPC result. */
   executePanel: async (

@@ -197,6 +197,42 @@ export interface AlmagestMeta {
   dashboard_count: number;
   read_only: boolean;
   heartbeat_enabled: boolean;
+  auth_enabled: boolean;
+}
+
+// --- auth & multi-user (doc 13) ----------------------------------------------
+
+export type Role = "admin" | "editor" | "viewer";
+
+export interface User {
+  id: string;
+  username: string;
+  role: Role;
+  email: string | null;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+/** Response of `GET /auth/me` — the SPA's auth bootstrap probe. */
+export interface AuthMe {
+  auth_enabled: boolean;
+  needs_setup: boolean;
+  user: User | null;
+}
+
+/** Response of login / setup — the user plus the CSRF token to echo back. */
+export interface AuthSession {
+  user: User;
+  csrf_token: string;
+}
+
+export interface HistoryEntry {
+  id: number;
+  event_kind: string;
+  entity_id: string | null;
+  user_id: string | null;
+  payload_json: string | null;
+  occurred_at: string;
 }
 
 export interface DashboardSummary {

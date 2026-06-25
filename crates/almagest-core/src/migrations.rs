@@ -57,6 +57,16 @@ pub fn migrate_to_current(conn: &Connection) -> Result<u32> {
     for m in schema::MIGRATIONS.iter().filter(|m| m.version > current) {
         apply(conn, m)?;
     }
+
+    // Keep the human-readable `almagest_metadata.format_version` in step with the
+    // applied schema version after an upgrade. On a fresh `create` the metadata
+    // row doesn't exist yet (seeded afterwards), so this UPDATE no-ops; on an
+    // existing file it bumps the stale value so the reported version is truthful.
+    conn.execute(
+        "UPDATE almagest_metadata SET value = ?1 WHERE key = 'format_version'",
+        rusqlite::params![FORMAT_VERSION.to_string()],
+    )?;
+
     Ok(FORMAT_VERSION)
 }
 
